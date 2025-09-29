@@ -1,4 +1,4 @@
 
 
 washing_values = {}
-drying_values = {}
+spinning_values = {}

@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 class StatusEnum(str, Enum):    #str을 상속 API 문서는 값이 string 형이어야하는 것을 알게됨 (FastAPI)
     WASHING = "WASHING"
-    DRYING = "DRYING"
+    SPINNING = "SPINNING"
     FINISHED = "FINISHED"
 
 class RegisterDevice(BaseModel):    #Pydantic이라는 Python 라이브러리의 BaseModel을 상속받아 데이터 모델을 정의
@@ -25,7 +25,7 @@ class UpdateData(BaseModel):
     battery: int
     last_update: int
     washing_standard: float
-    drying_standard: float
+    spinning_standard: float
 
 class DeviceUpdateRequest(BaseModel):   #요청
     machine_id: int
@@ -33,4 +33,4 @@ class DeviceUpdateRequest(BaseModel):   #요청
 
 class DeviceUpdateResponse(BaseModel):  #응답
     avg_washing_standard: float
-    avg_drying_standard: float
+    avg_spinning_standard: float
