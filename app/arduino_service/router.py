@@ -15,35 +15,43 @@ async def register_device(device: RegisterDevice):
     """새로운 세탁기를 등록"""
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor(buffered=True)
+            cursor = conn.cursor()
+
+            # room_name을 같은 room_id의 기존 레코드에서 검색, 없으면 기본값
+            room_name = None
+            cursor.execute("SELECT room_name FROM machine_table WHERE room_id = %s LIMIT 1", (device.room_id,))
+            row = cursor.fetchone()
+            if row:
+                room_name = row[0]
+            if not room_name:
+                room_name = f"Room {device.room_id}"
+
+            # machine_table에 새 기기 삽입 (room_name 포함)
+            query = """
+                INSERT INTO machine_table 
+                (machine_id, machine_name, room_id, room_name, battery_capacity, battery, status, last_update, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            values = (
+                device.machine_id,
+                device.machine_name,
+                device.room_id,
+                room_name,
+                device.battery_capacity,
+                device.battery_capacity,  # 초기 배터리는 최대 용량
+                "IDLE",
+                int(time.time()),
+                int(time.time())
+            )
+
+            cursor.execute(query, values)
+            conn.commit()
             
-            try:
-                query = """
-                    INSERT INTO machine_table 
-                    (machine_id, machine_name, room_id, battery_capacity, battery, status, last_update, timestamp)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """
-                values = (
-                    device.machine_id,
-                    device.machine_name,
-                    device.room_id,
-                    device.battery_capacity,
-                    device.battery_capacity,
-                    "IDLE",
-                    int(time.time()),
-                    int(time.time())
-                )
-                
-                cursor.execute(query, values)
-                conn.commit()
-                
-                return {
-                    "message": "register_machine ok",
-                    "machine_id": device.machine_id
-                }
-            finally:
-                cursor.close()
-                
+            return {
+                "message": "register_machine ok",
+                "machine_id": device.machine_id
+            }
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
@@ -91,21 +99,10 @@ async def update(data: UpdateData):
     """세탁기 상태 업데이트 및 기준값 저장"""
     try:
         with get_db_connection() as conn:
-            cursor = None
             try:
-                cursor = conn.cursor(buffered=True)
-                
-                # 1. machine_id로 machine_uuid 조회
-                uuid_query = "SELECT machine_uuid FROM machine_table WHERE machine_id = %s"
-                cursor.execute(uuid_query, (data.machine_id,))
-                result = cursor.fetchone()
-                
-                if not result:
-                    raise HTTPException(status_code=404, detail=f"Machine ID {data.machine_id} not found")
-                
-                machine_uuid = result[0]
-                
-                # 2. machine_table 업데이트
+                cursor = conn.cursor()
+
+                # 1. machine_table 업데이트
                 update_query = """
                     UPDATE machine_table 
                     SET status = %s, 
@@ -121,8 +118,14 @@ async def update(data: UpdateData):
                     int(time.time()),
                     data.machine_id
                 ))
-                
-                # 3. standard_table에 기준값 저장
+
+                # 2. machine_uuid 조회 후 standard_table에 기준값 저장
+                cursor.execute("SELECT machine_uuid FROM machine_table WHERE machine_id = %s", (data.machine_id,))
+                mu_row = cursor.fetchone()
+                if not mu_row:
+                    raise Exception("machine not found for machine_id")
+                machine_uuid = mu_row[0]
+
                 standard_query = """
                     INSERT INTO standard_table (machine_uuid, washing_standard, spinning_standard)
                     VALUES (%s, %s, %s)
