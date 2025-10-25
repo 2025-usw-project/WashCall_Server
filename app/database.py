@@ -1,17 +1,34 @@
 import mysql.connector
-from mysql.connector import Error
+from mysql.connector import Error, pooling
 from contextlib import contextmanager
-from typing import Optional
+import os
 
-# MySQL 데이터베이스 설정
+# MySQL 데이터베이스 설정 (.env 기반 유지)
 DB_CONFIG = {
-    'host': 'localhost',
-    'user': 'root',      # MySQL 사용자명으로 변경
-    'password': 'su1004',  # MySQL 비밀번호로 변경
-    'database': 'washing_machine_db',
-    'charset': 'utf8mb4',
-    'collation': 'utf8mb4_unicode_ci'
+    'host': os.getenv('DB_HOST', '127.0.0.1'),
+    'port': int(os.getenv('DB_PORT', '3306')),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', ''),
+    'database': os.getenv('DB_NAME', 'washing_machine_db'),
+    'charset': os.getenv('DB_CHARSET', 'utf8mb4'),
+    'collation': os.getenv('DB_COLLATION', 'utf8mb4_unicode_ci'),
+    'autocommit': False,
+    'connection_timeout': int(os.getenv('DB_CONN_TIMEOUT', '5')),
 }
+
+# 연결 풀 생성 (가능 시), 실패 시 단일 연결로 폴백
+connection_pool = None
+try:
+    connection_pool = pooling.MySQLConnectionPool(
+        pool_name="laundry_pool",
+        pool_size=5,
+        pool_reset_session=True,
+        **DB_CONFIG,
+    )
+    print("✓ MySQL 연결 풀 생성 성공")
+except Error as e:
+    print(f"✗ 연결 풀 생성 실패: {e}")
+    print("   직접 연결 방식으로 fallback됩니다.")
 
 
 @contextmanager
@@ -19,8 +36,20 @@ def get_db_connection():
     """데이터베이스 연결을 관리하는 context manager"""
     connection = None
     try:
-        connection = mysql.connector.connect(**DB_CONFIG)
-        yield connection
+        if connection_pool is not None:
+            connection = connection_pool.get_connection()
+        else:
+            connection = mysql.connector.connect(**DB_CONFIG)
+
+        if connection and connection.is_connected():
+            try:
+                # 연결이 유효한지 확인하고, 끊겼다면 재연결 시도
+                connection.ping(reconnect=True, attempts=1, delay=0)
+            except Exception:
+                pass
+            yield connection
+        else:
+            raise Error("Database connection is not active")
     except Error as e:
         print(f"Database connection error: {e}")
         raise
