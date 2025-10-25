@@ -156,83 +156,69 @@ async def device_update(request: DeviceUpdateRequest):
     """특정 세탁기의 평균 기준값 조회 및 업데이트"""
     try:
         with get_db_connection() as conn:
-            cursor = None
-            try:
-                cursor = conn.cursor(dictionary=True, buffered=True)
-                
-                # 1. machine_id로 machine_uuid 조회
-                uuid_query = "SELECT machine_uuid FROM machine_table WHERE machine_id = %s"
-                cursor.execute(uuid_query, (request.machine_id,))
-                uuid_result = cursor.fetchone()
-                
-                if not uuid_result:
-                    raise HTTPException(status_code=404, detail=f"Machine ID {request.machine_id} not found")
-                
-                machine_uuid = uuid_result['machine_uuid']
-                
-                # 2. 해당 machine_uuid의 평균 기준값 계산
-                query = """
-                    SELECT 
-                        AVG(washing_standard) as avg_washing,
-                        AVG(spinning_standard) as avg_spinning,
-                        COUNT(*) as count
-                    FROM standard_table
-                    WHERE machine_uuid = %s
-                """
-                cursor.execute(query, (machine_uuid,))
-                result = cursor.fetchone()
-                
-                if not result or result['count'] == 0:
-                    return DeviceUpdateResponse(
-                        avg_washing_standard=0.0,
-                        avg_spinning_standard=0.0
-                    )
-                
-                avg_washing = float(result['avg_washing'] or 0.0)
-                avg_spinning = float(result['avg_spinning'] or 0.0)
-                washing_count = int(result['count'])  # ✅ 세탁 기준값 개수
-                spinning_count = int(result['count'])  # ✅ 탈수 기준값 개수 (동일)
-                
-                # 3. machine_table의 평균값 및 개수 필드 업데이트
-                update_query = """
-                    UPDATE machine_table 
-                    SET avg_washing_standard = %s,
-                        avg_spinning_standard = %s,
-                        avg_washing_num = %s,
-                        avg_spinning_num = %s,
-                        last_update = %s
-                    WHERE machine_id = %s
-                """
-                cursor.execute(update_query, (
-                    avg_washing,
-                    avg_spinning,
-                    washing_count,   # ✅ 추가
-                    spinning_count,  # ✅ 추가
-                    request.timestamp,
-                    request.machine_id
-                ))
-                
-                conn.commit()
-                
+            cursor = conn.cursor(dictionary=True)
+
+            # machine_uuid 조회
+            cursor.execute("SELECT machine_uuid FROM machine_table WHERE machine_id = %s", (request.machine_id,))
+            mu = cursor.fetchone()
+            if not mu:
                 return DeviceUpdateResponse(
-                    avg_washing_standard=avg_washing,
-                    avg_spinning_standard=avg_spinning
+                    avg_washing_standard=0.0,
+                    avg_spinning_standard=0.0
                 )
-                
-            except HTTPException:
-                conn.rollback()
-                raise
-            except Exception as e:
-                conn.rollback()
-                raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
-            finally:
-                if cursor:
-                    cursor.close()
-                    
-    except HTTPException:
-        raise
+            machine_uuid = mu.get("machine_uuid")
+
+            # 1. 해당 machine_uuid의 평균 기준값 계산
+            query = """
+                SELECT 
+                    AVG(washing_standard) as avg_washing,
+                    AVG(spinning_standard) as avg_spinning,
+                    COUNT(*) as count
+                FROM standard_table
+                WHERE machine_uuid = %s
+            """
+            cursor.execute(query, (machine_uuid,))
+            result = cursor.fetchone()
+            
+            if not result or result['count'] == 0:
+                # 데이터가 없으면 0.0 반환
+                return DeviceUpdateResponse(
+                    avg_washing_standard=0.0,
+                    avg_spinning_standard=0.0
+                )
+            
+            avg_washing = float(result['avg_washing'] or 0.0)
+            avg_spinning = float(result['avg_spinning'] or 0.0)
+            count = int(result['count'] or 0)
+            
+            # 2. machine_table의 평균값 및 카운트 필드 업데이트
+            update_query = """
+                UPDATE machine_table 
+                SET avg_washing_standard = %s,
+                    avg_spinning_standard = %s,
+                    avg_washing_num = %s,
+                    avg_spinning_num = %s,
+                    last_update = %s
+                WHERE machine_id = %s
+            """
+            cursor.execute(update_query, (
+                avg_washing,
+                avg_spinning,
+                count,
+                count,
+                request.timestamp,
+                request.machine_id
+            ))
+            
+            conn.commit()
+            
+            return DeviceUpdateResponse(
+                avg_washing_standard=avg_washing,
+                avg_spinning_standard=avg_spinning
+            )
+            
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Device update failed: {str(e)}")
 
 
 @router.get("/all_devices")
@@ -240,90 +226,19 @@ async def get_all_devices():
     """모든 세탁기 정보 조회"""
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor(dictionary=True, buffered=True)
+            cursor = conn.cursor(dictionary=True)
             
-            try:
-                query = """
-                    SELECT machine_uuid, machine_id, machine_name, room_id, room_name, 
-                           status, battery, battery_capacity, last_update,
-                           avg_washing_standard, avg_spinning_standard
-                    FROM machine_table
-                """
-                
-                cursor.execute(query)
-                devices = cursor.fetchall()
-                
-                return {"devices": devices}
-            finally:
-                cursor.close()
-                
+            query = """
+                SELECT machine_id, machine_name, room_id, room_name, 
+                       status, battery, battery_capacity, last_update,
+                       avg_washing_standard, avg_spinning_standard
+                FROM machine_table
+            """
+            
+            cursor.execute(query)
+            devices = cursor.fetchall()
+            
+            return {"devices": devices}
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch devices: {str(e)}")
-
-
-@router.get("/device/{machine_id}")
-async def get_device_by_id(machine_id: int):
-    """특정 세탁기 정보 조회"""
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor(dictionary=True, buffered=True)
-            
-            try:
-                query = "SELECT * FROM machine_table WHERE machine_id = %s"
-                cursor.execute(query, (machine_id,))
-                device = cursor.fetchone()
-                
-                if not device:
-                    raise HTTPException(status_code=404, detail="Machine not found")
-                
-                return device
-            finally:
-                cursor.close()
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch device: {str(e)}")
-
-
-@router.get("/standards/{machine_id}")
-async def get_standards_history(machine_id: int, limit: int = 10):
-    """특정 세탁기의 기준값 이력 조회"""
-    try:
-        with get_db_connection() as conn:
-            cursor = None
-            try:
-                cursor = conn.cursor(dictionary=True, buffered=True)
-                
-                # machine_id로 machine_uuid 조회
-                uuid_query = "SELECT machine_uuid FROM machine_table WHERE machine_id = %s"
-                cursor.execute(uuid_query, (machine_id,))
-                uuid_result = cursor.fetchone()
-                
-                if not uuid_result:
-                    raise HTTPException(status_code=404, detail=f"Machine ID {machine_id} not found")
-                
-                machine_uuid = uuid_result['machine_uuid']
-                
-                # 기준값 이력 조회
-                query = """
-                    SELECT standard_id, machine_uuid, 
-                           washing_standard, spinning_standard, created_at
-                    FROM standard_table
-                    WHERE machine_uuid = %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """
-                cursor.execute(query, (machine_uuid, limit))
-                standards = cursor.fetchall()
-                
-                return {"standards": standards, "count": len(standards)}
-                
-            finally:
-                if cursor:
-                    cursor.close()
-                    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch standards: {str(e)}")
