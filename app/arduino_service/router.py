@@ -188,18 +188,24 @@ async def device_update(request: DeviceUpdateRequest):
                 
                 avg_washing = float(result['avg_washing'] or 0.0)
                 avg_spinning = float(result['avg_spinning'] or 0.0)
+                washing_count = int(result['count'])  # ✅ 세탁 기준값 개수
+                spinning_count = int(result['count'])  # ✅ 탈수 기준값 개수 (동일)
                 
-                # 3. machine_table의 평균값 필드 업데이트
+                # 3. machine_table의 평균값 및 개수 필드 업데이트
                 update_query = """
                     UPDATE machine_table 
                     SET avg_washing_standard = %s,
                         avg_spinning_standard = %s,
+                        avg_washing_num = %s,
+                        avg_spinning_num = %s,
                         last_update = %s
                     WHERE machine_id = %s
                 """
                 cursor.execute(update_query, (
                     avg_washing,
                     avg_spinning,
+                    washing_count,   # ✅ 추가
+                    spinning_count,  # ✅ 추가
                     request.timestamp,
                     request.machine_id
                 ))

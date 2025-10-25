@@ -13,7 +13,7 @@ from datetime import datetime
 # 설정
 # ========================================
 # 서버 URL 설정 (환경에 맞게 변경)
-# BASE_URL = "http://localhost:8000"
+#BASE_URL = "http://localhost:8000"
 BASE_URL = "https://unconical-kyong-frolicsome.ngrok-free.dev"
 
 # 테스트용 머신 ID
@@ -177,6 +177,13 @@ def test_device_update(machine_id: int):
     }
     
     result = make_request("POST", "/device_update", data=data)
+    
+    # ✅ 평균값 결과 상세 출력
+    if result:
+        print(f"\n{Colors.BOLD}{Colors.YELLOW}📊 평균값 상세 정보:{Colors.END}")
+        print(f"  - 세탁 평균: {result.get('avg_washing_standard', 0.0):.2f}")
+        print(f"  - 탈수 평균: {result.get('avg_spinning_standard', 0.0):.2f}")
+    
     return result
 
 
@@ -188,12 +195,23 @@ def test_get_all_devices():
     
     if result and "devices" in result:
         print_info(f"총 {len(result['devices'])}개의 기기가 등록되어 있습니다.")
+        print(f"\n{Colors.BOLD}{Colors.CYAN}{'='*80}{Colors.END}")
         for device in result['devices']:
-            print(f"  - ID: {device.get('machine_id')}, "
-                  f"UUID: {device.get('machine_uuid')}, "
-                  f"이름: {device.get('machine_name')}, "
-                  f"상태: {device.get('status')}, "
-                  f"배터리: {device.get('battery')}%")
+            # ✅ None 값 안전하게 처리
+            washing_avg = device.get('avg_washing_standard') or 0.0
+            spinning_avg = device.get('avg_spinning_standard') or 0.0
+            washing_num = device.get('avg_washing_num') or 0
+            spinning_num = device.get('avg_spinning_num') or 0
+            battery = device.get('battery') or 0
+            
+            print(f"{Colors.BOLD}세탁기 ID: {device.get('machine_id')}{Colors.END}")
+            print(f"  - UUID: {device.get('machine_uuid')}")
+            print(f"  - 이름: {device.get('machine_name')}")
+            print(f"  - 상태: {device.get('status')}")
+            print(f"  - 배터리: {battery}%")
+            print(f"  - 세탁 평균: {washing_avg:.2f} (총 {washing_num}회)")
+            print(f"  - 탈수 평균: {spinning_avg:.2f} (총 {spinning_num}회)")
+            print(f"{Colors.CYAN}{'-'*80}{Colors.END}")
     
     return result
 
@@ -203,6 +221,47 @@ def test_get_device_by_id(machine_id: int):
     print_section(f"7. 특정 기기 조회 (machine_id: {machine_id})")
     
     result = make_request("GET", f"/device/{machine_id}")
+    
+    if result:
+        # ✅ None 값 안전하게 처리
+        washing_avg = result.get('avg_washing_standard') or 0.0
+        spinning_avg = result.get('avg_spinning_standard') or 0.0
+        washing_num = result.get('avg_washing_num') or 0
+        spinning_num = result.get('avg_spinning_num') or 0
+        battery = result.get('battery') or 0
+        
+        print(f"\n{Colors.BOLD}{Colors.YELLOW}📱 기기 상세 정보:{Colors.END}")
+        print(f"  - machine_id: {result.get('machine_id')}")
+        print(f"  - machine_uuid: {result.get('machine_uuid')}")
+        print(f"  - 이름: {result.get('machine_name')}")
+        print(f"  - 상태: {result.get('status')}")
+        print(f"  - 배터리: {battery}%")
+        print(f"  - 세탁 평균: {washing_avg:.2f} (총 {washing_num}회)")
+        print(f"  - 탈수 평균: {spinning_avg:.2f} (총 {spinning_num}회)")
+    
+    return result
+
+
+def test_device_update(machine_id: int):
+    """평균값 조회 및 업데이트 테스트"""
+    print_section(f"5. 평균값 조회 (machine_id: {machine_id})")
+    
+    data = {
+        "machine_id": machine_id,
+        "timestamp": int(time.time())
+    }
+    
+    result = make_request("POST", "/device_update", data=data)
+    
+    if result:
+        # ✅ None 값 안전하게 처리
+        washing_avg = result.get('avg_washing_standard') or 0.0
+        spinning_avg = result.get('avg_spinning_standard') or 0.0
+        
+        print(f"\n{Colors.BOLD}{Colors.YELLOW}📊 평균값 상세 정보:{Colors.END}")
+        print(f"  - 세탁 평균: {washing_avg:.2f}")
+        print(f"  - 탈수 평균: {spinning_avg:.2f}")
+    
     return result
 
 
@@ -213,19 +272,19 @@ def test_get_standards_history(machine_id: int, limit: int = 5):
     result = make_request("GET", f"/standards/{machine_id}", params={"limit": limit})
     
     if result and "standards" in result:
-        print_info(f"총 {result['count']}개의 기록이 있습니다.")
-        for std in result['standards']:
-            print(f"  - UUID: {std.get('machine_uuid')}, "
-                  f"세탁: {std.get('washing_standard'):.2f}, "
-                  f"탈수: {std.get('spinning_standard'):.2f}, "
+        print_info(f"총 {result.get('count', 0)}개의 기록이 있습니다.")
+        for idx, std in enumerate(result['standards'], 1):
+            # ✅ None 값 안전하게 처리
+            washing = std.get('washing_standard') or 0.0
+            spinning = std.get('spinning_standard') or 0.0
+            
+            print(f"  [{idx}] UUID: {std.get('machine_uuid')}, "
+                  f"세탁: {washing:.2f}, "
+                  f"탈수: {spinning:.2f}, "
                   f"시간: {std.get('created_at')}")
     
     return result
 
-
-# ========================================
-# 시나리오 테스트
-# ========================================
 
 def scenario_single_machine_workflow(machine_id: int):
     """단일 머신 전체 워크플로우 테스트"""
@@ -264,7 +323,22 @@ def scenario_single_machine_workflow(machine_id: int):
     
     # 6. 기기 정보 확인
     print_info("Step 6: 기기 상세 정보 확인")
-    results.append(test_get_device_by_id(machine_id))
+    device_result = test_get_device_by_id(machine_id)
+    results.append(device_result is not None)
+    
+    # ✅ 최종 통계 출력 (None 값 안전하게 처리)
+    if device_result:
+        washing_avg = device_result.get('avg_washing_standard') or 0.0
+        spinning_avg = device_result.get('avg_spinning_standard') or 0.0
+        washing_num = device_result.get('avg_washing_num') or 0
+        spinning_num = device_result.get('avg_spinning_num') or 0
+        
+        print(f"\n{Colors.BOLD}{Colors.MAGENTA}{'='*60}{Colors.END}")
+        print(f"{Colors.BOLD}{Colors.MAGENTA}📊 최종 통계 (세탁기 {machine_id}){Colors.END}")
+        print(f"{Colors.BOLD}{Colors.MAGENTA}{'='*60}{Colors.END}")
+        print(f"  세탁 평균: {washing_avg:.2f} (총 {washing_num}회 데이터)")
+        print(f"  탈수 평균: {spinning_avg:.2f} (총 {spinning_num}회 데이터)")
+        print(f"{Colors.BOLD}{Colors.MAGENTA}{'='*60}{Colors.END}\n")
     
     # 결과 요약
     success_count = sum(1 for r in results if r)
@@ -273,6 +347,7 @@ def scenario_single_machine_workflow(machine_id: int):
     print(f"\n{Colors.BOLD}결과: {success_count}/{total_count} 성공{Colors.END}")
     
     return success_count == total_count
+
 
 
 def scenario_multiple_machines():
@@ -328,6 +403,12 @@ def scenario_stress_test(machine_id: int, iterations: int = 10):
     print(f"  - 성공: {success_count}/{iterations}")
     print(f"  - 소요 시간: {elapsed_time:.2f}초")
     print(f"  - 평균 응답 시간: {elapsed_time/iterations:.3f}초")
+    
+    # ✅ 최종 데이터 확인
+    print_info("\n최종 데이터 업데이트 중...")
+    test_device_update(machine_id)
+    time.sleep(0.5)
+    test_get_device_by_id(machine_id)
 
 
 # ========================================
