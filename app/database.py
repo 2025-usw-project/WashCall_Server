@@ -59,14 +59,20 @@ def get_db_connection():
 
 
 def execute_query(query: str, params: tuple = None, fetch: bool = False):
-    """쿼리를 실행하고 결과를 반환하는 헬퍼 함수"""
+    """쿼리 실행 헬퍼 함수"""
     with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(query, params or ())
-        
-        if fetch:
-            result = cursor.fetchall()
-            return result
-        else:
-            conn.commit()
-            return cursor.lastrowid
+        cursor = conn.cursor(dictionary=True, buffered=True)
+        try:
+            cursor.execute(query, params or ())
+
+            if fetch:
+                result = cursor.fetchall()
+                return result
+            else:
+                conn.commit()
+                return cursor.lastrowid
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
