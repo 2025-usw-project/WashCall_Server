@@ -5,6 +5,7 @@ from .schemas import (
 )
 from ..database import get_db_connection
 import time
+from app.websocket.manager import broadcast_room_status, broadcast_notify
 
 router = APIRouter()
 
@@ -52,32 +53,35 @@ async def devices(data: DeviceData):
     """세탁기 정보를 받아서 데이터베이스에 저장"""
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor(buffered=True)
+            cursor = conn.cursor()
+
+            # machine_table 업데이트
+            query = """
+                UPDATE machine_table 
+                SET status = %s, 
+                    battery = %s, 
+                    last_update = %s,
+                    timestamp = %s
+                WHERE machine_id = %s
+            """
+            values = (
+                data.status.value,
+                data.battery,
+                data.last_update,
+                int(time.time()),
+                data.machine_id
+            )
+
+            cursor.execute(query, values)
+            conn.commit()
+
+        # 상태 변경 브로드캐스트
+        status_str = data.status.value
+        await broadcast_room_status(data.machine_id, status_str)
+        await broadcast_notify(data.machine_id, status_str)
+
+        return {"message": "received"}
             
-            try:
-                query = """
-                    UPDATE machine_table 
-                    SET status = %s, 
-                        battery = %s, 
-                        last_update = %s,
-                        timestamp = %s
-                    WHERE machine_id = %s
-                """
-                values = (
-                    data.status.value,
-                    data.battery,
-                    data.last_update,
-                    int(time.time()),
-                    data.machine_id
-                )
-                
-                cursor.execute(query, values)
-                conn.commit()
-                
-                return {"message": "received"}
-            finally:
-                cursor.close()
-                
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
 
@@ -128,25 +132,20 @@ async def update(data: UpdateData):
                     data.washing_standard,
                     data.spinning_standard
                 ))
-                
+
                 conn.commit()
-                
-                return {"message": "received finished"}
-                
-            except HTTPException:
+            except Exception:
                 conn.rollback()
                 raise
-            except Exception as e:
-                conn.rollback()
-                raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
-            finally:
-                if cursor:
-                    cursor.close()
-                    
-    except HTTPException:
-        raise
+
+        # 커밋 후 브로드캐스트
+        status_str = data.status.value
+        await broadcast_room_status(data.machine_id, status_str)
+        await broadcast_notify(data.machine_id, status_str)
+
+        return {"message": "received finished"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
 
 
 @router.post("/device_update", response_model=DeviceUpdateResponse)
