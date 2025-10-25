@@ -14,13 +14,12 @@ class RegisterResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    user_username: str
+    user_snum: int
     user_password: str
 
 
 class LoginResponse(BaseModel):
     access_token: str
-    user_role: str
 
 
 class LogoutRequest(BaseModel):

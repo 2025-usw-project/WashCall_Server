@@ -45,7 +45,7 @@ async def register(body: RegisterRequest):
 async def login(body: LoginRequest):
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM user_table WHERE user_username = %s", (body.user_username,))
+        cursor.execute("SELECT * FROM user_table WHERE user_snum = %s", (body.user_snum,))
         user = cursor.fetchone()
         if not user or not verify_password(body.user_password, user.get("user_password", "")):
             raise HTTPException(status_code=401, detail="invalid credentials")
@@ -54,7 +54,7 @@ async def login(body: LoginRequest):
         token = issue_jwt(int(user["user_id"]), role_str)
         cursor.execute("UPDATE user_table SET user_token = %s WHERE user_id = %s", (token, user["user_id"]))
         conn.commit()
-    return LoginResponse(access_token=token, user_role=role_str)
+    return LoginResponse(access_token=token)
 
 @router.post("/logout")
 async def logout(body: LogoutRequest):
