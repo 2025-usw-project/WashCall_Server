@@ -86,12 +86,12 @@ async def device_subscribe_get(room_name: str = Query(...), user_snum: str = Que
             raise HTTPException(status_code=404, detail="user not found")
         user_id = int(u["user_id"])
 
-        # Resolve room_id from room_name
-        cursor.execute("SELECT room_id FROM machine_table WHERE room_name = %s LIMIT 1", (room_name,))
+        # Resolve room_id from room_table by room_name
+        cursor.execute("SELECT room_id FROM room_table WHERE room_name = %s LIMIT 1", (room_name,))
         r = cursor.fetchone()
         if not r:
             raise HTTPException(status_code=404, detail="room not found")
-        room_id = int(r.get("room_id"))
+        room_id = int(r.get("room_id") if isinstance(r, dict) else r[0])
 
         # Insert subscription if not exists
         c2 = conn.cursor()
@@ -120,9 +120,13 @@ async def load(body: LoadRequest):
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             """
-            SELECT m.machine_id, m.room_name, m.machine_name, m.status
+            SELECT m.machine_id,
+                   COALESCE(rt.room_name, m.room_name) AS room_name,
+                   m.machine_name,
+                   m.status
             FROM machine_table m
             JOIN room_subscriptions rs ON m.room_id = rs.room_id
+            LEFT JOIN room_table rt ON m.room_id = rt.room_id
             WHERE rs.user_id = %s
             """,
             (user_id,)
@@ -250,8 +254,8 @@ async def admin_machines(body: AdminMachinesRequest):
 async def admin_add_device(body: AdminAddDeviceRequest):
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        # Derive room_name from existing records or fallback
-        cursor.execute("SELECT room_name FROM machine_table WHERE room_id = %s LIMIT 1", (body.room_id,))
+        # Derive room_name from room_table or fallback
+        cursor.execute("SELECT room_name FROM room_table WHERE room_id = %s LIMIT 1", (body.room_id,))
         r = cursor.fetchone()
         room_name = (r.get("room_name") if r else None) or f"Room {body.room_id}"
         # Insert with provided machine_id
@@ -278,20 +282,10 @@ async def admin_add_room(body: AdminAddRoomRequest):
 
     with get_db_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT COALESCE(MAX(room_id), 0) + 1 AS next_id FROM machine_table")
-        row = cur.fetchone()
-        next_id = int(row[0] if not isinstance(row, dict) else row.get("next_id", 1))
-
-        # Insert placeholder row to persist room_name mapping
-        cur.execute(
-            """
-            INSERT INTO machine_table (machine_id, machine_name, room_id, room_name, battery_capacity, battery, status, last_update, timestamp)
-            VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            ("", next_id, body.room_name, 0, 0, "IDLE", int(time.time()), int(time.time()))
-        )
+        cur.execute("INSERT INTO room_table (room_name) VALUES (%s)", (body.room_name,))
+        new_id = cur.lastrowid
         conn.commit()
-    return {"room_id": next_id}
+    return {"room_id": int(new_id)}
 
 @router.post("/set_fcm_token")
 async def set_fcm_token(body: SetFcmTokenRequest):
