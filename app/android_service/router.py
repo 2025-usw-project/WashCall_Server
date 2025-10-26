@@ -52,7 +52,9 @@ async def login(body: LoginRequest):
 
         role_str = role_to_str(user.get("user_role"))
         token = issue_jwt(int(user["user_id"]), role_str)
-        cursor.execute("UPDATE user_table SET user_token = %s WHERE user_id = %s", (token, user["user_id"]))
+        cursor.execute(
+            "UPDATE user_table SET user_token = %s, fcm_token = %s WHERE user_id = %s",
+            (token, body.fcm_token, user["user_id"]))
         conn.commit()
     return LoginResponse(access_token=token)
 

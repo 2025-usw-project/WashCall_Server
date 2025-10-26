@@ -16,6 +16,7 @@ class RegisterResponse(BaseModel):
 class LoginRequest(BaseModel):
     user_snum: int
     user_password: str
+    fcm_token: str
 
 
 class LoginResponse(BaseModel):

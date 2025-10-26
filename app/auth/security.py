@@ -19,11 +19,13 @@ def verify_password(password: str, hashed: str) -> bool:
 
 
 def issue_jwt(user_id: int, role: str) -> str:
+    now = int(time.time())
     payload = {
         "sub": str(user_id),
         "role": role,
-        "iat": int(time.time()),
-        "jti": f"{user_id}-{int(time.time())}"
+        "iat": now,
+        "exp": now + 60 * 60 * 24 * 7,  # 1 week expiration
+        "jti": f"{user_id}-{now}",
     }
     return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
 
