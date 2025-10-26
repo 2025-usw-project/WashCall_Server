@@ -3,6 +3,7 @@ import json
 from fastapi import WebSocket
 
 from app.database import get_db_connection
+from app.notifications.fcm import send_to_tokens
 
 
 class ConnectionManager:
@@ -70,15 +71,32 @@ async def broadcast_room_status(machine_id: int, status: str):
             "room_name": m.get("room_name"),
             "machine_name": m.get("machine_name")
         })
+    uids = [int(u["user_id"]) for u in users]
+    if uids:
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            placeholders = ",".join(["%s"] * len(uids))
+            cur.execute(
+                f"SELECT fcm_token FROM user_table WHERE user_id IN ({placeholders}) AND fcm_token IS NOT NULL",
+                tuple(uids)
+            )
+            rows = cur.fetchall() or []
+        tokens = [r[0] for r in rows if r and r[0]]
+        if tokens:
+            title = "세탁기 상태 변경"
+            body = f"{m.get('room_name')} {m.get('machine_name')}: {status}"
+            data = {
+                "machine_id": machine_id,
+                "room_id": room_id,
+                "status": status,
+            }
+            send_to_tokens(tokens, title, body, data)
 
 
 async def broadcast_notify(machine_id: int, status: str):
-    if status != "FINISHED":
-        return
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        # Resolve machine_uuid from machine_id then notify subscribers
-        cursor.execute("SELECT machine_uuid FROM machine_table WHERE machine_id = %s", (machine_id,))
+        cursor.execute("SELECT machine_uuid, machine_name, room_id FROM machine_table WHERE machine_id = %s", (machine_id,))
         mu = cursor.fetchone()
         if not mu:
             return
@@ -94,3 +112,23 @@ async def broadcast_notify(machine_id: int, status: str):
             "machine_id": machine_id,
             "status": status
         })
+    uids = [int(u["user_id"]) for u in users]
+    if uids:
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            placeholders = ",".join(["%s"] * len(uids))
+            cur.execute(
+                f"SELECT fcm_token FROM user_table WHERE user_id IN ({placeholders}) AND fcm_token IS NOT NULL",
+                tuple(uids)
+            )
+            rows = cur.fetchall() or []
+        tokens = [r[0] for r in rows if r and r[0]]
+        if tokens:
+            title = "세탁기 상태 변경"
+            body = f"{mu.get('machine_name')}: {status}"
+            data = {
+                "machine_id": machine_id,
+                "room_id": mu.get("room_id"),
+                "status": status,
+            }
+            send_to_tokens(tokens, title, body, data)
