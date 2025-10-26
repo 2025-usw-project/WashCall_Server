@@ -92,6 +92,44 @@ async def device_subscribe(body: DeviceSubscribeRequest):
         conn.commit()
     return {"message": "subscribe ok"}
 
+@router.get("/device_subscribe")
+async def device_subscribe_get(room_name: str = Query(...), user_snum: str = Query(...)):
+    try:
+        snum = int(user_snum)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid user_snum")
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor(dictionary=True)
+        # Resolve user_id from user_snum
+        cursor.execute("SELECT user_id FROM user_table WHERE user_snum = %s", (snum,))
+        u = cursor.fetchone()
+        if not u:
+            raise HTTPException(status_code=404, detail="user not found")
+        user_id = int(u["user_id"])
+
+        # Resolve room_id from room_name
+        cursor.execute("SELECT room_id FROM machine_table WHERE room_name = %s LIMIT 1", (room_name,))
+        r = cursor.fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="room not found")
+        room_id = int(r.get("room_id"))
+
+        # Insert subscription if not exists
+        c2 = conn.cursor()
+        c2.execute(
+            "SELECT 1 FROM room_subscriptions WHERE user_id = %s AND room_id = %s",
+            (user_id, room_id)
+        )
+        exists = c2.fetchone()
+        if not exists:
+            c2.execute(
+                "INSERT INTO room_subscriptions (user_id, room_id) VALUES (%s, %s)",
+                (user_id, room_id)
+            )
+        conn.commit()
+    return {"message": "subscribe ok"}
+
 @router.post("/load", response_model=LoadResponse)
 async def load(body: LoadRequest):
     try:
