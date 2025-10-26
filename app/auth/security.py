@@ -1,7 +1,6 @@
 import os
 import time
 import hashlib
-import uuid
 import jwt
 from typing import Optional
 
