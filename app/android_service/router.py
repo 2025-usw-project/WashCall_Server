@@ -248,8 +248,16 @@ async def admin_machines(body: AdminMachinesRequest):
     ]
     return {"machine_list": machine_list}
 
-@router.post("/admin_add_device")
+@router.post("/admin/add_device")
 async def admin_add_device(body: AdminAddDeviceRequest):
+    # Admin-only: add device to a room
+    try:
+        user = get_current_user(body.access_token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="forbidden")
+
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         # Derive room_name from room_table or fallback

@@ -60,6 +60,7 @@ class NotifyMeRequest(BaseModel):
 
 
 class AdminAddDeviceRequest(BaseModel):
+    access_token: str
     room_id: int
     machine_id: int
     machine_name: str
