@@ -5,7 +5,7 @@ from app.android_service.schemas import (
     RegisterRequest, RegisterResponse,
     LoginRequest, LoginResponse,
     LogoutRequest,
-    DeviceSubscribeRequest, LoadRequest, LoadResponse, MachineItem,
+    LoadRequest, LoadResponse, MachineItem,
     ReserveRequest, NotifyMeRequest,
     AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminMachinesRequest, AdminAddRoomResponse
 )
@@ -69,28 +69,6 @@ async def logout(body: LogoutRequest):
         conn.commit()
     return {"message": "logout ok"}
 
-@router.post("/device_subscribe")
-async def device_subscribe(body: DeviceSubscribeRequest):
-    try:
-        user = get_current_user(body.access_token)
-    except Exception:
-        raise HTTPException(status_code=401, detail="invalid token")
-
-    user_id = int(user["user_id"])
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM room_subscriptions WHERE user_id = %s AND room_id = %s",
-            (user_id, body.room_id)
-        )
-        exists = cursor.fetchone()
-        if not exists:
-            cursor.execute(
-                "INSERT INTO room_subscriptions (user_id, room_id) VALUES (%s, %s)",
-                (user_id, body.room_id)
-            )
-        conn.commit()
-    return {"message": "subscribe ok"}
 
 @router.get("/device_subscribe")
 async def device_subscribe_get(room_name: str = Query(...), user_snum: str = Query(...)):
