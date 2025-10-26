@@ -63,9 +63,17 @@ class AdminAddDeviceRequest(BaseModel):
     machine_name: str
 
 
+class AdminMachinesRequest(BaseModel):
+    access_token: str
+    room_id: int
+
+
 class AdminAddRoomRequest(BaseModel):
     access_token: str
     room_name: str
+
+
+class AdminAddRoomResponse(BaseModel):
     room_id: int
 
 

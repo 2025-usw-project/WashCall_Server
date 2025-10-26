@@ -7,7 +7,7 @@ from app.android_service.schemas import (
     LogoutRequest,
     DeviceSubscribeRequest, LoadRequest, LoadResponse, MachineItem,
     ReserveRequest, NotifyMeRequest,
-    AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest
+    AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminMachinesRequest, AdminAddRoomResponse
 )
 from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
@@ -204,11 +204,11 @@ async def notify_me_off(body: NotifyMeRequest):
         conn.commit()
     return {"message": "notify off ok"}
 
-@router.get("/admin/machines")
-async def admin_machines(access_token: str = Query(...), room_id: int = Query(...)):
+@router.post("/admin/machines")
+async def admin_machines(body: AdminMachinesRequest):
     # Admin-only: list machines in a room
     try:
-        user = get_current_user(access_token)
+        user = get_current_user(body.access_token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
     if not is_admin(user):
@@ -217,8 +217,8 @@ async def admin_machines(access_token: str = Query(...), room_id: int = Query(..
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT machine_id, machine_name, status FROM machine_table WHERE room_id = %s",
-            (room_id,)
+            "SELECT machine_id, machine_name, status FROM machine_table WHERE room_id = %s AND machine_id IS NOT NULL",
+            (body.room_id,)
         )
         rows = cursor.fetchall() or []
     machine_list = [
@@ -250,9 +250,9 @@ async def admin_add_device(body: AdminAddDeviceRequest):
         conn.commit()
     return {"message": "admin add ok"}
 
-@router.post("/admin/add_room")
+@router.post("/admin/add_room", response_model=AdminAddRoomResponse)
 async def admin_add_room(body: AdminAddRoomRequest):
-    # Admin-only: set room_name for a room_id across machine_table
+    # Admin-only: create a new room_id with given room_name, return room_id
     try:
         user = get_current_user(body.access_token)
     except Exception:
@@ -261,13 +261,21 @@ async def admin_add_room(body: AdminAddRoomRequest):
         raise HTTPException(status_code=403, detail="forbidden")
 
     with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE machine_table SET room_name = %s WHERE room_id = %s",
-            (body.room_name, body.room_id)
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(MAX(room_id), 0) + 1 AS next_id FROM machine_table")
+        row = cur.fetchone()
+        next_id = int(row[0] if not isinstance(row, dict) else row.get("next_id", 1))
+
+        # Insert placeholder row to persist room_name mapping
+        cur.execute(
+            """
+            INSERT INTO machine_table (machine_id, machine_name, room_id, room_name, battery_capacity, battery, status, last_update, timestamp)
+            VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            ("", next_id, body.room_name, 0, 0, "IDLE", int(time.time()), int(time.time()))
         )
         conn.commit()
-    return {"message": "admin add ok"}
+    return {"room_id": next_id}
 
 @router.post("/set_fcm_token")
 async def set_fcm_token(body: SetFcmTokenRequest):
