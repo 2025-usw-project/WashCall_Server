@@ -63,6 +63,12 @@ class AdminAddDeviceRequest(BaseModel):
     machine_name: str
 
 
+class AdminAddRoomRequest(BaseModel):
+    access_token: str
+    room_name: str
+    room_id: int
+
+
 class SetFcmTokenRequest(BaseModel):
     access_token: str
     fcm_token: str

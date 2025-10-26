@@ -7,10 +7,10 @@ from app.android_service.schemas import (
     LogoutRequest,
     DeviceSubscribeRequest, LoadRequest, LoadResponse, MachineItem,
     ReserveRequest, NotifyMeRequest,
-    AdminAddDeviceRequest, SetFcmTokenRequest
+    AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest
 )
 from app.auth.security import (
-    hash_password, verify_password, issue_jwt, get_current_user, decode_jwt
+    hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
 )
 from app.websocket.manager import manager
 from app.database import get_db_connection
@@ -204,6 +204,32 @@ async def notify_me_off(body: NotifyMeRequest):
         conn.commit()
     return {"message": "notify off ok"}
 
+@router.get("/admin/machines")
+async def admin_machines(access_token: str = Query(...), room_id: int = Query(...)):
+    # Admin-only: list machines in a room
+    try:
+        user = get_current_user(access_token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT machine_id, machine_name, status FROM machine_table WHERE room_id = %s",
+            (room_id,)
+        )
+        rows = cursor.fetchall() or []
+    machine_list = [
+        {
+            "machine_id": int(r.get("machine_id")),
+            "machine_name": r.get("machine_name") or "",
+            "status": r.get("status") or ""
+        } for r in rows
+    ]
+    return {"machine_list": machine_list}
+
 @router.post("/admin_add_device")
 async def admin_add_device(body: AdminAddDeviceRequest):
     with get_db_connection() as conn:
@@ -220,6 +246,25 @@ async def admin_add_device(body: AdminAddDeviceRequest):
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (body.machine_id, body.machine_name, body.room_id, room_name, 0, 0, "IDLE", int(time.time()), int(time.time()))
+        )
+        conn.commit()
+    return {"message": "admin add ok"}
+
+@router.post("/admin/add_room")
+async def admin_add_room(body: AdminAddRoomRequest):
+    # Admin-only: set room_name for a room_id across machine_table
+    try:
+        user = get_current_user(body.access_token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE machine_table SET room_name = %s WHERE room_id = %s",
+            (body.room_name, body.room_id)
         )
         conn.commit()
     return {"message": "admin add ok"}
