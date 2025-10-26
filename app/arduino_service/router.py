@@ -63,6 +63,11 @@ async def devices(data: DeviceData):
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
+            # 이전 상태 조회
+            cursor.execute("SELECT status FROM machine_table WHERE machine_id = %s", (data.machine_id,))
+            prev_row = cursor.fetchone()
+            prev_status = prev_row[0] if prev_row else None
+
             # machine_table 업데이트
             query = """
                 UPDATE machine_table 
@@ -83,10 +88,11 @@ async def devices(data: DeviceData):
             cursor.execute(query, values)
             conn.commit()
 
-        # 상태 변경 브로드캐스트
+        # 상태 변경 시에만 브로드캐스트
         status_str = data.status.value
-        await broadcast_room_status(data.machine_id, status_str)
-        await broadcast_notify(data.machine_id, status_str)
+        if prev_status != status_str:
+            await broadcast_room_status(data.machine_id, status_str)
+            await broadcast_notify(data.machine_id, status_str)
 
         return {"message": "received"}
             
@@ -101,6 +107,11 @@ async def update(data: UpdateData):
         with get_db_connection() as conn:
             try:
                 cursor = conn.cursor()
+
+                # 이전 상태 조회
+                cursor.execute("SELECT status FROM machine_table WHERE machine_id = %s", (data.machine_id,))
+                prev_row = cursor.fetchone()
+                prev_status = prev_row[0] if prev_row else None
 
                 # 1. machine_table 업데이트
                 update_query = """
@@ -141,10 +152,11 @@ async def update(data: UpdateData):
                 conn.rollback()
                 raise
 
-        # 커밋 후 브로드캐스트
+        # 커밋 후 상태 변경 시에만 브로드캐스트
         status_str = data.status.value
-        await broadcast_room_status(data.machine_id, status_str)
-        await broadcast_notify(data.machine_id, status_str)
+        if prev_status != status_str:
+            await broadcast_room_status(data.machine_id, status_str)
+            await broadcast_notify(data.machine_id, status_str)
 
         return {"message": "received finished"}
     except Exception as e:
