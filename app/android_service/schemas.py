@@ -56,6 +56,7 @@ class ReserveRequest(BaseModel):
 class NotifyMeRequest(BaseModel):
     access_token: str
     machine_id: int
+    isusing: int
 
 
 class AdminAddDeviceRequest(BaseModel):

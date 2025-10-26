@@ -169,11 +169,23 @@ async def reserve(body: ReserveRequest):
                 "INSERT INTO reservation_table (user_id, room_id, isreserved) VALUES (%s, %s, %s)",
                 (user_id, body.room_id, body.isreserved)
             )
+        cursor.execute(
+            "SELECT 1 FROM room_subscriptions WHERE user_id = %s AND room_id = %s",
+            (user_id, body.room_id)
+        )
+        exists = cursor.fetchone()
+        if not exists:
+            cursor.execute(
+                "INSERT INTO room_subscriptions (user_id, room_id) VALUES (%s, %s)",
+                (user_id, body.room_id)
+            )
         conn.commit()
     return {"message": "reserve ok"}
 
 @router.post("/notify_me")
 async def notify_me(body: NotifyMeRequest):
+    if body.isusing not in (0, 1):
+        raise HTTPException(status_code=400, detail="isusing must be 0 or 1")
     try:
         user = get_current_user(body.access_token)
     except Exception:
@@ -191,40 +203,24 @@ async def notify_me(body: NotifyMeRequest):
         if not machine_uuid:
             raise HTTPException(status_code=404, detail="machine not found")
 
-        cursor.execute(
-            "SELECT 1 FROM notify_subscriptions WHERE user_id = %s AND machine_uuid = %s",
-            (user_id, machine_uuid)
-        )
-        exists = cursor.fetchone()
-        if not exists:
+        if body.isusing == 1:
             cursor.execute(
-                "INSERT INTO notify_subscriptions (user_id, machine_uuid) VALUES (%s, %s)",
+                "SELECT 1 FROM notify_subscriptions WHERE user_id = %s AND machine_uuid = %s",
+                (user_id, machine_uuid)
+            )
+            exists = cursor.fetchone()
+            if not exists:
+                cursor.execute(
+                    "INSERT INTO notify_subscriptions (user_id, machine_uuid) VALUES (%s, %s)",
+                    (user_id, machine_uuid)
+                )
+        else:
+            cursor.execute(
+                "DELETE FROM notify_subscriptions WHERE user_id = %s AND machine_uuid = %s",
                 (user_id, machine_uuid)
             )
         conn.commit()
     return {"message": "notify ok"}
-
-@router.post("/notify_me_off")
-async def notify_me_off(body: NotifyMeRequest):
-    try:
-        user = get_current_user(body.access_token)
-    except Exception:
-        raise HTTPException(status_code=401, detail="invalid token")
-
-    user_id = int(user["user_id"])
-    with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT machine_uuid FROM machine_table WHERE machine_id = %s", (body.machine_id,))
-        m = cursor.fetchone()
-        if not m:
-            raise HTTPException(status_code=404, detail="machine not found")
-        machine_uuid = m.get("machine_uuid")
-        cursor.execute(
-            "DELETE FROM notify_subscriptions WHERE user_id = %s AND machine_uuid = %s",
-            (user_id, machine_uuid)
-        )
-        conn.commit()
-    return {"message": "notify off ok"}
 
 @router.post("/admin/machines")
 async def admin_machines(body: AdminMachinesRequest):
