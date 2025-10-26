@@ -1,6 +1,7 @@
 import os
 import time
 import hashlib
+import uuid
 import jwt
 from typing import Optional
 
@@ -19,11 +20,13 @@ def verify_password(password: str, hashed: str) -> bool:
 
 
 def issue_jwt(user_id: int, role: str) -> str:
+    now = int(time.time())
     payload = {
         "sub": str(user_id),
         "role": role,
-        "iat": int(time.time()),
-        "jti": f"{user_id}-{int(time.time())}"
+        "iat": now,
+        "exp": now + 60 * 60 * 24,  # 1 day expiration
+        "jti": uuid.uuid4().hex,    # ensure a new token every login
     }
     return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
 

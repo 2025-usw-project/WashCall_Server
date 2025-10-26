@@ -10,7 +10,7 @@ from app.android_service.schemas import (
     AdminAddDeviceRequest, SetFcmTokenRequest
 )
 from app.auth.security import (
-    hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
+    hash_password, verify_password, issue_jwt, get_current_user, decode_jwt
 )
 from app.websocket.manager import manager
 from app.database import get_db_connection
@@ -206,27 +206,20 @@ async def notify_me_off(body: NotifyMeRequest):
 
 @router.post("/admin_add_device")
 async def admin_add_device(body: AdminAddDeviceRequest):
-    try:
-        user = get_current_user(body.access_token)
-    except Exception:
-        raise HTTPException(status_code=401, detail="invalid token")
-    if not is_admin(user):
-        raise HTTPException(status_code=403, detail="forbidden")
-
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        # Derive room_name from existing records
+        # Derive room_name from existing records or fallback
         cursor.execute("SELECT room_name FROM machine_table WHERE room_id = %s LIMIT 1", (body.room_id,))
         r = cursor.fetchone()
         room_name = (r.get("room_name") if r else None) or f"Room {body.room_id}"
-        # Pre-provision device without Arduino machine_id (NULL)
+        # Insert with provided machine_id
         cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO machine_table (machine_id, machine_name, room_id, room_name, battery_capacity, battery, status, last_update, timestamp)
-            VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (body.machine_name, body.room_id, room_name, 0, 0, "IDLE", int(time.time()), int(time.time()))
+            (body.machine_id, body.machine_name, body.room_id, room_name, 0, 0, "IDLE", int(time.time()), int(time.time()))
         )
         conn.commit()
     return {"message": "admin add ok"}
