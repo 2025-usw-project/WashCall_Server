@@ -7,7 +7,7 @@ from app.android_service.schemas import (
     LogoutRequest,
     LoadRequest, LoadResponse, MachineItem,
     ReserveRequest, NotifyMeRequest,
-    AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminMachinesRequest, AdminAddRoomResponse
+    AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminAddRoomResponse
 )
 from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
@@ -113,22 +113,46 @@ async def load(body: LoadRequest):
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
 
+    # Read role from JWT (for future branching if needed)
+    try:
+        payload = decode_jwt(body.access_token)
+        role_in_jwt = str(payload.get("role", "")).upper()
+    except Exception:
+        role_in_jwt = ""
+
     user_id = int(user["user_id"])
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute(
-            """
-            SELECT m.machine_id,
-                   COALESCE(rt.room_name, m.room_name) AS room_name,
-                   m.machine_name,
-                   m.status
-            FROM machine_table m
-            JOIN room_subscriptions rs ON m.room_id = rs.room_id
-            LEFT JOIN room_table rt ON m.room_id = rt.room_id
-            WHERE rs.user_id = %s
-            """,
-            (user_id,)
-        )
+        if role_in_jwt == "ADMIN":
+            # Admin: show machines in rooms associated to this admin (via room_subscriptions)
+            cursor.execute(
+                """
+                SELECT m.machine_id,
+                       COALESCE(rt.room_name, m.room_name) AS room_name,
+                       m.machine_name,
+                       m.status
+                FROM machine_table m
+                JOIN room_subscriptions rs ON m.room_id = rs.room_id
+                LEFT JOIN room_table rt ON m.room_id = rt.room_id
+                WHERE rs.user_id = %s
+                """,
+                (user_id,)
+            )
+        else:
+            # User: show machines in rooms the user subscribed to
+            cursor.execute(
+                """
+                SELECT m.machine_id,
+                       COALESCE(rt.room_name, m.room_name) AS room_name,
+                       m.machine_name,
+                       m.status
+                FROM machine_table m
+                JOIN room_subscriptions rs ON m.room_id = rs.room_id
+                LEFT JOIN room_table rt ON m.room_id = rt.room_id
+                WHERE rs.user_id = %s
+                """,
+                (user_id,)
+            )
         rows = cursor.fetchall() or []
 
     machines = [
@@ -218,31 +242,6 @@ async def notify_me(body: NotifyMeRequest):
         conn.commit()
     return {"message": "notify ok"}
 
-@router.post("/admin/machines")
-async def admin_machines(body: AdminMachinesRequest):
-    # Admin-only: list machines in a room
-    try:
-        user = get_current_user(body.access_token)
-    except Exception:
-        raise HTTPException(status_code=401, detail="invalid token")
-    if not is_admin(user):
-        raise HTTPException(status_code=403, detail="forbidden")
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT machine_id, machine_name, status FROM machine_table WHERE room_id = %s AND machine_id IS NOT NULL",
-            (body.room_id,)
-        )
-        rows = cursor.fetchall() or []
-    machine_list = [
-        {
-            "machine_id": int(r.get("machine_id")),
-            "machine_name": r.get("machine_name") or "",
-            "status": r.get("status") or ""
-        } for r in rows
-    ]
-    return {"machine_list": machine_list}
 
 @router.post("/admin/add_device")
 async def admin_add_device(body: AdminAddDeviceRequest):
@@ -284,8 +283,15 @@ async def admin_add_room(body: AdminAddRoomRequest):
 
     with get_db_connection() as conn:
         cur = conn.cursor()
+        # 1) Create room
         cur.execute("INSERT INTO room_table (room_name) VALUES (%s)", (body.room_name,))
         new_id = cur.lastrowid
+        # 2) Subscribe admin(user_id) to this room for association
+        try:
+            cur.execute("INSERT INTO room_subscriptions (user_id, room_id) VALUES (%s, %s)", (int(user["user_id"]), int(new_id)))
+        except Exception:
+            # Ignore duplicate or fk errors silently
+            pass
         conn.commit()
     return {"room_id": int(new_id)}
 
