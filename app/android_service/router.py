@@ -73,35 +73,40 @@ async def logout(body: LogoutRequest):
 
 
 @router.get("/device_subscribe")
-async def device_subscribe_get(room_name: str = Query(...), user_snum: int = Query(...)):
+async def device_subscribe_get(room_id: int = Query(...), user_snum: str = Query(...)):
+    # Parse inputs
+    try:
+        snum = int(user_snum)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid user_snum")
+    rid = int(room_id)
 
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         # Resolve user_id from user_snum
-        cursor.execute("SELECT user_id FROM user_table WHERE user_snum = %s", (user_snum,))
+        cursor.execute("SELECT user_id FROM user_table WHERE user_snum = %s", (snum,))
         u = cursor.fetchone()
         if not u:
             raise HTTPException(status_code=404, detail="user not found")
         user_id = int(u["user_id"])
 
-        # Resolve room_id from room_table by room_name
-        cursor.execute("SELECT room_id FROM room_table WHERE room_name = %s LIMIT 1", (room_name,))
+        # Ensure room exists by id
+        cursor.execute("SELECT 1 FROM room_table WHERE room_id = %s", (rid,))
         r = cursor.fetchone()
         if not r:
             raise HTTPException(status_code=404, detail="room not found")
-        room_id = int(r.get("room_id") if isinstance(r, dict) else r[0])
 
         # Insert subscription if not exists
         c2 = conn.cursor()
         c2.execute(
             "SELECT 1 FROM room_subscriptions WHERE user_id = %s AND room_id = %s",
-            (user_id, room_id)
+            (user_id, rid)
         )
         exists = c2.fetchone()
         if not exists:
             c2.execute(
                 "INSERT INTO room_subscriptions (user_id, room_id) VALUES (%s, %s)",
-                (user_id, room_id)
+                (user_id, rid)
             )
         conn.commit()
     return {"message": "subscribe ok"}
