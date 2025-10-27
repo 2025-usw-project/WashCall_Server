@@ -73,16 +73,12 @@ async def logout(body: LogoutRequest):
 
 
 @router.get("/device_subscribe")
-async def device_subscribe_get(room_name: str = Query(...), user_snum: str = Query(...)):
-    try:
-        snum = int(user_snum)
-    except Exception:
-        raise HTTPException(status_code=400, detail="invalid user_snum")
+async def device_subscribe_get(room_name: str = Query(...), user_snum: int = Query(...)):
 
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         # Resolve user_id from user_snum
-        cursor.execute("SELECT user_id FROM user_table WHERE user_snum = %s", (snum,))
+        cursor.execute("SELECT user_id FROM user_table WHERE user_snum = %s", (user_snum,))
         u = cursor.fetchone()
         if not u:
             raise HTTPException(status_code=404, detail="user not found")
