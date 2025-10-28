@@ -1,36 +1,33 @@
 from enum import Enum
 from pydantic import BaseModel
 
-class StatusEnum(str, Enum):    #str을 상속 API 문서는 값이 string 형이어야하는 것을 알게됨 (FastAPI)
+class StatusEnum(str, Enum):
     WASHING = "WASHING"
     SPINNING = "SPINNING"
     FINISHED = "FINISHED"
-
-class RegisterDevice(BaseModel):    #Pydantic이라는 Python 라이브러리의 BaseModel을 상속받아 데이터 모델을 정의
-    machine_id: int
-    room_id: int
-    machine_name: str
-    battery_capacity: int
-
-class DeviceData(BaseModel):
-    machine_id: int
-    machine_type: str
-    status: StatusEnum
-    battery: int
-    last_update: int
-
+    EXT_VIBE = "EXT_VIBE"
+    OFF = "OFF"
+    
+# /update용 스키마
 class UpdateData(BaseModel):
     machine_id: int
+    secret_key: str
     status: StatusEnum
+    machine_type: str
+    timestamp: int
     battery: int
-    last_update: int
-    washing_standard: float
-    spinning_standard: float
+    wash_avg_magnitude: float = None  # FINISHED일 때만
+    wash_max_magnitude: float = None
+    spin_max_magnitude: float = None
 
-class DeviceUpdateRequest(BaseModel):   #요청
+# /device_update용 스키마
+class DeviceUpdateRequest(BaseModel):
     machine_id: int
-    timestamp: int  # Unix time 시각을 나타내는 방식
-
-class DeviceUpdateResponse(BaseModel):  #응답
+    timestamp: int
     avg_washing_standard: float
     avg_spinning_standard: float
+
+class DeviceUpdateResponse(BaseModel):
+    message: str = "received"
+    avg_washing_standard: float = None
+    avg_spinning_standard: float = None
