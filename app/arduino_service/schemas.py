@@ -7,7 +7,7 @@ class StatusEnum(str, Enum):
     FINISHED = "FINISHED"
     EXT_VIBE = "EXT_VIBE"
     OFF = "OFF"
-    
+
 # /update용 스키마
 class UpdateData(BaseModel):
     machine_id: int
@@ -24,10 +24,8 @@ class UpdateData(BaseModel):
 class DeviceUpdateRequest(BaseModel):
     machine_id: int
     timestamp: int
-    avg_washing_standard: float
-    avg_spinning_standard: float
 
 class DeviceUpdateResponse(BaseModel):
     message: str = "received"
-    avg_washing_standard: float = None
-    avg_spinning_standard: float = None
+    NewWashThreshold: float = None  # 컬럼명 변경
+    NewSpinThreshold: float = None  # 컬럼명 변경
