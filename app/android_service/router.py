@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from fastapi import HTTPException, WebSocket, Query
+from fastapi import HTTPException, WebSocket, Query, Header
 import time
 from app.android_service.schemas import (
     RegisterRequest, RegisterResponse,
@@ -7,7 +7,8 @@ from app.android_service.schemas import (
     LogoutRequest,
     LoadRequest, LoadResponse, MachineItem,
     ReserveRequest, NotifyMeRequest,
-    AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminAddRoomResponse
+    AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminAddRoomResponse,
+    DeviceSubscribeRequest,
 )
 from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
@@ -22,6 +23,14 @@ def role_to_str(val) -> str:
         return "ADMIN" if int(val) == 1 else "USER"
     except Exception:
         return "ADMIN" if str(val).upper() == "ADMIN" else "USER"
+
+
+def _resolve_token(authorization: str | None, fallback_token: str | None = None) -> str:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1]
+    if fallback_token:
+        return fallback_token
+    raise HTTPException(status_code=401, detail="invalid token")
 
 
 @router.post("/register", response_model=RegisterResponse)
@@ -59,9 +68,10 @@ async def login(body: LoginRequest):
     return LoginResponse(access_token=token)
 
 @router.post("/logout")
-async def logout(body: LogoutRequest):
+async def logout(body: LogoutRequest, authorization: str | None = Header(None)):
+    token = _resolve_token(authorization, getattr(body, "access_token", None))
     try:
-        user = get_current_user(body.access_token)
+        user = get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
 
@@ -72,30 +82,26 @@ async def logout(body: LogoutRequest):
     return {"message": "logout ok"}
 
 
-@router.get("/device_subscribe")
-async def device_subscribe_get(room_id: int = Query(...), user_snum: str = Query(...)):
-    # Parse inputs
-    try:
-        snum = int(user_snum)
-    except Exception:
-        raise HTTPException(status_code=400, detail="invalid user_snum")
-    rid = int(room_id)
+## Removed legacy GET /device_subscribe endpoint
 
+@router.post("/device_subscribe")
+async def device_subscribe_post(body: DeviceSubscribeRequest, authorization: str | None = Header(None)):
+    # Use header bearer token if present; fallback to body.access_token for backward compatibility
+    token = _resolve_token(authorization, getattr(body, "access_token", None))
+    try:
+        user = get_current_user(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    rid = int(body.room_id)
+    user_id = int(user["user_id"])
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        # Resolve user_id from user_snum
-        cursor.execute("SELECT user_id FROM user_table WHERE user_snum = %s", (snum,))
-        u = cursor.fetchone()
-        if not u:
-            raise HTTPException(status_code=404, detail="user not found")
-        user_id = int(u["user_id"])
-
         # Ensure room exists by id
         cursor.execute("SELECT 1 FROM room_table WHERE room_id = %s", (rid,))
         r = cursor.fetchone()
         if not r:
             raise HTTPException(status_code=404, detail="room not found")
-
         # Insert subscription if not exists
         c2 = conn.cursor()
         c2.execute(
@@ -112,15 +118,16 @@ async def device_subscribe_get(room_id: int = Query(...), user_snum: str = Query
     return {"message": "subscribe ok"}
 
 @router.post("/load", response_model=LoadResponse)
-async def load(body: LoadRequest):
+async def load(body: LoadRequest | None = None, authorization: str | None = Header(None)):
+    token = _resolve_token(authorization, getattr(body, "access_token", None) if body else None)
     try:
-        user = get_current_user(body.access_token)
+        user = get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
 
     # Read role from JWT (for future branching if needed)
     try:
-        payload = decode_jwt(body.access_token)
+        payload = decode_jwt(token)
         role_in_jwt = str(payload.get("role", "")).upper()
     except Exception:
         role_in_jwt = ""
@@ -171,11 +178,12 @@ async def load(body: LoadRequest):
     return LoadResponse(machine_list=machines)
 
 @router.post("/reserve")
-async def reserve(body: ReserveRequest):
+async def reserve(body: ReserveRequest, authorization: str | None = Header(None)):
     if body.isreserved not in (0, 1):
         raise HTTPException(status_code=400, detail="isreserved must be 0 or 1")
+    token = _resolve_token(authorization, getattr(body, "access_token", None))
     try:
-        user = get_current_user(body.access_token)
+        user = get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
 
@@ -208,11 +216,12 @@ async def reserve(body: ReserveRequest):
     return {"message": "reserve ok"}
 
 @router.post("/notify_me")
-async def notify_me(body: NotifyMeRequest):
+async def notify_me(body: NotifyMeRequest, authorization: str | None = Header(None)):
     if body.isusing not in (0, 1):
         raise HTTPException(status_code=400, detail="isusing must be 0 or 1")
+    token = _resolve_token(authorization, getattr(body, "access_token", None))
     try:
-        user = get_current_user(body.access_token)
+        user = get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
 
@@ -247,12 +256,12 @@ async def notify_me(body: NotifyMeRequest):
         conn.commit()
     return {"message": "notify ok"}
 
-
 @router.post("/admin/add_device")
-async def admin_add_device(body: AdminAddDeviceRequest):
+async def admin_add_device(body: AdminAddDeviceRequest, authorization: str | None = Header(None)):
     # Admin-only: add device to a room
+    token = _resolve_token(authorization, getattr(body, "access_token", None))
     try:
-        user = get_current_user(body.access_token)
+        user = get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
     if not is_admin(user):
@@ -277,10 +286,11 @@ async def admin_add_device(body: AdminAddDeviceRequest):
     return {"message": "admin add ok"}
 
 @router.post("/admin/add_room", response_model=AdminAddRoomResponse)
-async def admin_add_room(body: AdminAddRoomRequest):
+async def admin_add_room(body: AdminAddRoomRequest, authorization: str | None = Header(None)):
     # Admin-only: create a new room_id with given room_name, return room_id
+    token = _resolve_token(authorization, getattr(body, "access_token", None))
     try:
-        user = get_current_user(body.access_token)
+        user = get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
     if not is_admin(user):
@@ -301,9 +311,10 @@ async def admin_add_room(body: AdminAddRoomRequest):
     return {"room_id": int(new_id)}
 
 @router.post("/set_fcm_token")
-async def set_fcm_token(body: SetFcmTokenRequest):
+async def set_fcm_token(body: SetFcmTokenRequest, authorization: str | None = Header(None)):
+    token = _resolve_token(authorization, getattr(body, "access_token", None))
     try:
-        user = get_current_user(body.access_token)
+        user = get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
 
@@ -313,6 +324,34 @@ async def set_fcm_token(body: SetFcmTokenRequest):
         conn.commit()
     return {"message": "set fcm token ok"}
 
+
+@router.get("/rooms")
+async def get_rooms(
+    authorization: str | None = Header(None),
+    access_token: str | None = Query(None)
+):
+    token = _resolve_token(authorization, access_token)
+    try:
+        user = get_current_user(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    user_id = int(user["user_id"])
+    with get_db_connection() as conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT rt.room_id, rt.room_name
+            FROM room_table rt
+            JOIN room_subscriptions rs ON rs.room_id = rt.room_id
+            WHERE rs.user_id = %s
+            ORDER BY rt.room_id
+            """,
+            (user_id,)
+        )
+        rows = cursor.fetchall() or []
+    rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows ]
+    return {"rooms": rooms}
 
 @router.get("/debug")
 async def debug_dump():

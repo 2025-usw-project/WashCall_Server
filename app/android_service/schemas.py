@@ -24,16 +24,16 @@ class LoginResponse(BaseModel):
 
 
 class LogoutRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
 
 
 class DeviceSubscribeRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
     room_id: int
 
 
 class LoadRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
 
 
 class MachineItem(BaseModel):
@@ -48,31 +48,31 @@ class LoadResponse(BaseModel):
 
 
 class ReserveRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
     room_id: int
     isreserved: int
 
 
 class NotifyMeRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
     machine_id: int
     isusing: int
 
 
 class AdminAddDeviceRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
     room_id: int
     machine_id: int
     machine_name: str
 
 
 class AdminMachinesRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
     room_id: int
 
 
 class AdminAddRoomRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
     room_name: str
 
 
@@ -81,5 +81,5 @@ class AdminAddRoomResponse(BaseModel):
 
 
 class SetFcmTokenRequest(BaseModel):
-    access_token: str
+    access_token: str | None = None
     fcm_token: str
