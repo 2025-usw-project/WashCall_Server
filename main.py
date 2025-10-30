@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
-load_dotenv()
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.arduino_service.router import router as arduino_router
@@ -9,6 +9,8 @@ from app.android_service.router import router as android_router
 # 데이터베이스 연결 설정 추가
 from app.database import get_db_connection
 import logging
+
+load_dotenv()
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +29,74 @@ app.add_middleware(
 
 app.include_router(arduino_router, tags=["arduino"])
 app.include_router(android_router, tags=["android"])
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=getattr(app, "description", None),
+        routes=app.routes,
+    )
+    components = openapi_schema.setdefault("components", {})
+    security_schemes = components.setdefault("securitySchemes", {})
+    security_schemes["bearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+    }
+
+    # Mark protected endpoints with bearer security
+    protected = {
+        "/logout": ["post"],
+        "/load": ["post"],
+        "/reserve": ["post"],
+        "/notify_me": ["post"],
+        "/admin/add_device": ["post"],
+        "/admin/add_room": ["post"],
+        "/set_fcm_token": ["post"],
+        "/rooms": ["get"],
+        "/device_subscribe": ["post"],
+    }
+    for path, methods in protected.items():
+        path_item = openapi_schema.get("paths", {}).get(path)
+        if not path_item:
+            continue
+        for method in methods:
+            op = path_item.get(method)
+            if op is not None:
+                op.setdefault("security", [{"bearerAuth": []}])
+
+    # Remove access_token from request models in docs (migration away from body tokens)
+    schemas = components.setdefault("schemas", {})
+    remove_token_in = [
+        "LogoutRequest",
+        "DeviceSubscribeRequest",
+        "LoadRequest",
+        "ReserveRequest",
+        "NotifyMeRequest",
+        "AdminAddDeviceRequest",
+        "AdminAddRoomRequest",
+        "AdminMachinesRequest",
+        "SetFcmTokenRequest",
+    ]
+    for name in remove_token_in:
+        schema = schemas.get(name)
+        if not schema or "properties" not in schema:
+            continue
+        props = schema["properties"]
+        if "access_token" in props:
+            props.pop("access_token", None)
+        if "required" in schema and isinstance(schema["required"], list):
+            schema["required"] = [r for r in schema["required"] if r != "access_token"]
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 @app.get("/health")
