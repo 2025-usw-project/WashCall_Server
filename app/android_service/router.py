@@ -326,8 +326,11 @@ async def set_fcm_token(body: SetFcmTokenRequest, authorization: str | None = He
 
 
 @router.get("/rooms")
-async def get_rooms(authorization: str | None = Header(None)):
-    token = _resolve_token(authorization, None)
+async def get_rooms(
+    authorization: str | None = Header(None),
+    access_token: str | None = Query(None)
+):
+    token = _resolve_token(authorization, access_token)
     try:
         user = get_current_user(token)
     except Exception:
