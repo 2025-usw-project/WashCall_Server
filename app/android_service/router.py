@@ -326,8 +326,11 @@ async def set_fcm_token(body: SetFcmTokenRequest, authorization: str | None = He
 
 
 @router.get("/rooms")
-async def get_rooms(authorization: str | None = Header(None)):
-    token = _resolve_token(authorization, None)
+async def get_rooms(
+    authorization: str | None = Header(None),
+    access_token: str | None = Query(None)
+):
+    token = _resolve_token(authorization, access_token)
     try:
         user = get_current_user(token)
     except Exception:
@@ -347,7 +350,7 @@ async def get_rooms(authorization: str | None = Header(None)):
             (user_id,)
         )
         rows = cursor.fetchall() or []
-    rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows]
+    rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows ]
     return {"rooms": rooms}
 
 @router.get("/debug")
