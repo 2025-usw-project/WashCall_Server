@@ -350,7 +350,7 @@ async def get_rooms(
             (user_id,)
         )
         rows = cursor.fetchall() or []
-    rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows]
+    rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows ]
     return {"rooms": rooms}
 
 @router.get("/debug")
