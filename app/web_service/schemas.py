@@ -1,5 +1,5 @@
-from pydantic import BaseModel, RootModel, conlist
-from typing import List, Dict
+from pydantic import BaseModel, RootModel, Field
+from typing import List, Dict, Annotated
 
 
 class RegisterRequest(BaseModel):
@@ -85,6 +85,6 @@ class SetFcmTokenRequest(BaseModel):
     fcm_token: str
 
 
-class CongestionResponse(RootModel[Dict[str, conlist(int, min_items=24, max_items=24)]]):
+class CongestionResponse(RootModel[Dict[str, Annotated[List[int], Field(min_length=24, max_length=24)]]]):
     """요일 키(월~일) -> 24길이 정수 배열 매핑"""
     pass
