@@ -22,7 +22,7 @@ app = FastAPI(title="Laundry API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # consider restricting to explicit origins in production
-    allow_credentials=False,  # cookies won't be sent; bearer tokens must be set explicitly by clients
+    allow_credentials=True,  # cookies won't be sent; bearer tokens must be set explicitly by clients
     allow_methods=["*"],
     allow_headers=["Authorization", "Content-Type"],  # ensure Authorization is allowed in CORS preflight
 )
