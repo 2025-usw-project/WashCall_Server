@@ -1,9 +1,9 @@
-from dotenv import load_dotenv
-load_dotenv()
 import mysql.connector
 from mysql.connector import Error, pooling
 from contextlib import contextmanager
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # MySQL 데이터베이스 설정 (.env 기반 유지)
 DB_CONFIG = {
