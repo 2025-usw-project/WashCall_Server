@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from fastapi import HTTPException, WebSocket, Query, Header
+from loguru import logger
 import time
 from app.web_service.schemas import (
     RegisterRequest, RegisterResponse,
@@ -439,12 +440,16 @@ async def status_update(websocket: WebSocket, token: str = Query(...)):
         await websocket.close(code=1008)
         return
 
+    logger.info("WS handshake success user_id={}", user_id)
     await manager.connect(user_id, websocket)
     try:
         while True:
             # 클라이언트 keep-alive 수신(내용은 사용하지 않음)
-            await websocket.receive_text()
+            msg = await websocket.receive_text()
+            safe = msg if len(msg) <= 500 else msg[:500] + "..."
+            logger.info("WS recv user_id={} payload={}", user_id, safe)
     except Exception:
         pass
     finally:
         manager.disconnect(user_id, websocket)
+        logger.info("WS closed user_id={}", user_id)

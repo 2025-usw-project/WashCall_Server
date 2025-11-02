@@ -1,6 +1,7 @@
 from typing import Dict, List
 import json
 from fastapi import WebSocket
+from loguru import logger
 
 from app.database import get_db_connection
 from app.notifications.fcm import send_to_tokens
@@ -15,6 +16,7 @@ class ConnectionManager:
         self.active.setdefault(user_id, [])
         if websocket not in self.active[user_id]:
             self.active[user_id].append(websocket)
+        logger.info("WS connected user_id={} active_conns={}", user_id, len(self.active[user_id]))
 
     def disconnect(self, user_id: int, websocket: WebSocket):
         conns = self.active.get(user_id)
@@ -26,12 +28,15 @@ class ConnectionManager:
             pass
         if not conns:
             self.active.pop(user_id, None)
+        logger.info("WS disconnected user_id={}", user_id)
 
     async def send_to_user(self, user_id: int, data: dict):
         conns = list(self.active.get(user_id, []))
         if not conns:
             return
         text = json.dumps(data)
+        safe = text if len(text) <= 1000 else text[:1000] + "..."
+        logger.info("WS send user_id={} payload={} targets={}", user_id, safe, len(conns))
         for ws in conns:
             try:
                 await ws.send_text(text)
@@ -41,6 +46,7 @@ class ConnectionManager:
                     conns.remove(ws)
                 except Exception:
                     pass
+                logger.warning("WS send failed and connection dropped user_id={}", user_id)
 
 
 manager = ConnectionManager()
