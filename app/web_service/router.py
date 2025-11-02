@@ -8,7 +8,7 @@ from app.web_service.schemas import (
     LoadRequest, LoadResponse, MachineItem,
     ReserveRequest, NotifyMeRequest,
     AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminAddRoomResponse,
-    DeviceSubscribeRequest,
+    DeviceSubscribeRequest, CongestionResponse,
 )
 from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
@@ -354,7 +354,7 @@ async def get_rooms(
     return {"rooms": rooms}
 
 
-@router.get("/statistics/congestion")
+@router.get("/statistics/congestion", response_model=CongestionResponse)
 async def get_congestion_statistics():
     """요일/시간대별 혼잡도(사용 수) 집계 반환.
 
