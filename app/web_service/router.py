@@ -1,7 +1,10 @@
 from fastapi import APIRouter
-from fastapi import HTTPException, WebSocket, Query, Header
+from fastapi import HTTPException, Query, Header
+from fastapi.responses import StreamingResponse
 from loguru import logger
 import time
+import json
+import asyncio
 from app.web_service.schemas import (
     RegisterRequest, RegisterResponse,
     LoginRequest, LoginResponse,
@@ -422,8 +425,9 @@ async def debug_dump():
                 result[t] = [{"_error": str(e)}]
     return result
 
-@router.websocket("/status_update")
-async def status_update(websocket: WebSocket, token: str = Query(...)):
+@router.get("/status_update")
+async def status_update(token: str = Query(...)):
+    """SSE (Server-Sent Events) 스트림으로 실시간 상태 업데이트 전송"""
     # JWT 인증
     try:
         payload = decode_jwt(token)
@@ -434,22 +438,47 @@ async def status_update(websocket: WebSocket, token: str = Query(...)):
             cursor.execute("SELECT user_token FROM user_table WHERE user_id = %s", (user_id,))
             row = cursor.fetchone()
             if not row or row.get("user_token") != token:
-                await websocket.close(code=1008)
-                return
+                raise HTTPException(status_code=401, detail="invalid token")
+    except HTTPException:
+        raise
     except Exception:
-        await websocket.close(code=1008)
-        return
+        raise HTTPException(status_code=401, detail="invalid token")
 
-    logger.info("WS handshake success user_id={}", user_id)
-    await manager.connect(user_id, websocket)
-    try:
-        while True:
-            # 클라이언트 keep-alive 수신(내용은 사용하지 않음)
-            msg = await websocket.receive_text()
-            safe = msg if len(msg) <= 500 else msg[:500] + "..."
-            logger.info("WS recv user_id={} payload={}", user_id, safe)
-    except Exception:
-        pass
-    finally:
-        manager.disconnect(user_id, websocket)
-        logger.info("WS closed user_id={}", user_id)
+    async def event_generator():
+        """SSE 이벤트 스트림 생성기"""
+        queue = await manager.connect(user_id)
+        logger.info("SSE handshake success user_id={}", user_id)
+        
+        try:
+            # 초기 연결 확인 메시지 전송
+            yield f"data: {json.dumps({'type': 'connected', 'user_id': user_id})}\n\n"
+            
+            while True:
+                try:
+                    # 큐에서 메시지 대기 (타임아웃 30초로 keep-alive)
+                    data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    message = json.dumps(data)
+                    safe = message if len(message) <= 500 else message[:500] + "..."
+                    logger.info("SSE send user_id={} payload={}", user_id, safe)
+                    yield f"data: {message}\n\n"
+                except asyncio.TimeoutError:
+                    # Keep-alive: 빈 주석 라인 전송
+                    yield ": keep-alive\n\n"
+                except Exception as e:
+                    logger.error("SSE event generator error user_id={} error={}", user_id, str(e))
+                    break
+        except Exception as e:
+            logger.error("SSE stream error user_id={} error={}", user_id, str(e))
+        finally:
+            manager.disconnect(user_id, queue)
+            logger.info("SSE closed user_id={}", user_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # nginx 버퍼링 비활성화
+        }
+    )
