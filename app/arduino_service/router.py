@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from .schemas import UpdateData, DeviceUpdateRequest, DeviceUpdateResponse
 from app.database import get_db_connection
-from app.websocket.manager import manager
+from app.websocket.manager import broadcast_room_status, broadcast_notify
 import json
 
 router = APIRouter()
@@ -58,32 +58,32 @@ async def update(data: UpdateData):
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            
+
             # 1차 UPDATE (항상 실행)
             if data.status in ("WASHING", "SPINNING", "FINISHED"):
                 query = """
-                    UPDATE machine_table SET status=%s, battery=%s, timestamp=%s
-                    WHERE machine_id=%s
+                UPDATE machine_table SET status=%s, battery=%s, timestamp=%s
+                WHERE machine_id=%s
                 """
                 cursor.execute(query, (data.status, data.battery, data.timestamp, data.machine_id))
-            
+
             # 2차, 만약 status가 FINISHED라면 표준값 INSERT + 기준점 자동 계산
             if data.status == "FINISHED":
                 cursor.execute(
                     "SELECT machine_uuid FROM machine_table WHERE machine_id=%s",
                     (data.machine_id,)
                 )
-                
+
                 result = cursor.fetchone()
                 if result is None:
                     raise HTTPException(status_code=404, detail="machine_id not found")
-                
+
                 machine_uuid = result[0]
-                
+
                 # standard_table에 데이터 삽입
                 query2 = """
-                    INSERT INTO standard_table (machine_uuid, wash_avg_magnitude, wash_max_magnitude, spin_max_magnitude)
-                    VALUES (%s, %s, %s, %s)
+                INSERT INTO standard_table (machine_uuid, wash_avg_magnitude, wash_max_magnitude, spin_max_magnitude)
+                VALUES (%s, %s, %s, %s)
                 """
                 cursor.execute(query2, (
                     machine_uuid,
@@ -91,35 +91,23 @@ async def update(data: UpdateData):
                     data.wash_max_magnitude,
                     data.spin_max_magnitude,
                 ))
-                
+
                 # 새로운 기준점 자동 계산
                 calculate_and_update_thresholds(cursor, machine_uuid)
-                
-                cursor.execute(                 # -- websocket 추가
-                    """
-                    SELECT machine_id, machine_uuid, machine_name, room_id, room_name, 
-                        status, battery, NewWashThreshold, NewSpinThreshold, timestamp
-                    FROM machine_table WHERE machine_id=%s
-                    """,
-                    (data.machine_id,)
-                )
-                machine_info = cursor.fetchone()
 
-                if machine_info:
-                    ws_message = {
-                        "type": "machine_update",
-                        "data": {
-                            "machine_id": machine_info[0],
-                            "status": machine_info[5],
-                            "battery": machine_info[6],
-                            # ... 나머지 필드
-                        }
-                    }
-                    await manager.broadcast(json.dumps(ws_message))     # --
-            
+            # ✅ 중요: DB 커밋을 먼저 실행 (WebSocket 브로드캐스트 전에)
             conn.commit()
+
+            # ✅ 핵심 수정: 모든 상태 변경에 대해 WebSocket 알림 전송
+            # 상태가 변경될 때마다 구독 중인 사용자들에게 실시간 알림
+            if data.status in ("WASHING", "SPINNING", "FINISHED"):
+                # room 구독자들에게 알림
+                await broadcast_room_status(data.machine_id, data.status)
+                # 개별 기기 구독자들에게 알림  
+                await broadcast_notify(data.machine_id, data.status)
+
             return {"message": "received"}
-            
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
     
