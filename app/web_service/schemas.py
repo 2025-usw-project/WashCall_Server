@@ -1,4 +1,4 @@
-from pydantic import BaseModel, conlist
+from pydantic import BaseModel, RootModel, conlist
 from typing import List, Dict
 
 
@@ -85,6 +85,6 @@ class SetFcmTokenRequest(BaseModel):
     fcm_token: str
 
 
-class CongestionResponse(BaseModel):
+class CongestionResponse(RootModel[Dict[str, conlist(int, min_items=24, max_items=24)]]):
     """요일 키(월~일) -> 24길이 정수 배열 매핑"""
-    __root__: Dict[str, conlist(int, min_items=24, max_items=24)]
+    pass
