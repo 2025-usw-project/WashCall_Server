@@ -82,44 +82,7 @@ async def logout(body: LogoutRequest, authorization: str | None = Header(None)):
     return {"message": "logout ok"}
 
 
-@router.get("/device_subscribe")
-async def device_subscribe_get(room_id: int = Query(...), user_snum: str = Query(...)):
-    # Parse inputs
-    try:
-        snum = int(user_snum)
-    except Exception:
-        raise HTTPException(status_code=400, detail="invalid user_snum")
-    rid = int(room_id)
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
-        # Resolve user_id from user_snum
-        cursor.execute("SELECT user_id FROM user_table WHERE user_snum = %s", (snum,))
-        u = cursor.fetchone()
-        if not u:
-            raise HTTPException(status_code=404, detail="user not found")
-        user_id = int(u["user_id"])
-
-        # Ensure room exists by id
-        cursor.execute("SELECT 1 FROM room_table WHERE room_id = %s", (rid,))
-        r = cursor.fetchone()
-        if not r:
-            raise HTTPException(status_code=404, detail="room not found")
-
-        # Insert subscription if not exists
-        c2 = conn.cursor()
-        c2.execute(
-            "SELECT 1 FROM room_subscriptions WHERE user_id = %s AND room_id = %s",
-            (user_id, rid)
-        )
-        exists = c2.fetchone()
-        if not exists:
-            c2.execute(
-                "INSERT INTO room_subscriptions (user_id, room_id) VALUES (%s, %s)",
-                (user_id, rid)
-            )
-        conn.commit()
-    return {"message": "subscribe ok"}
+## Removed legacy GET /device_subscribe endpoint
 
 @router.post("/device_subscribe")
 async def device_subscribe_post(body: DeviceSubscribeRequest, authorization: str | None = Header(None)):
@@ -363,8 +326,11 @@ async def set_fcm_token(body: SetFcmTokenRequest, authorization: str | None = He
 
 
 @router.get("/rooms")
-async def get_rooms(authorization: str | None = Header(None)):
-    token = _resolve_token(authorization, None)
+async def get_rooms(
+    authorization: str | None = Header(None),
+    access_token: str | None = Query(None)
+):
+    token = _resolve_token(authorization, access_token)
     try:
         user = get_current_user(token)
     except Exception:
@@ -384,7 +350,7 @@ async def get_rooms(authorization: str | None = Header(None)):
             (user_id,)
         )
         rows = cursor.fetchall() or []
-    rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows]
+    rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows ]
     return {"rooms": rooms}
 
 @router.get("/debug")

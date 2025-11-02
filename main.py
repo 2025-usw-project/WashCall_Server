@@ -21,10 +21,10 @@ app = FastAPI(title="Laundry API", version="1.0.0")
 # Android 앱과의 통신을 위해 CORS 허용
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"],  # consider restricting to explicit origins in production
+    allow_credentials=True,  # cookies won't be sent; bearer tokens must be set explicitly by clients
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],  # ensure Authorization is allowed in CORS preflight
 )
 
 app.include_router(arduino_router, tags=["arduino"])
@@ -58,7 +58,7 @@ def custom_openapi():
         "/admin/add_room": ["post"],
         "/set_fcm_token": ["post"],
         "/rooms": ["get"],
-        "/device_subscribe": ["post"],
+        "/device_subscribe": ["get"],
     }
     for path, methods in protected.items():
         path_item = openapi_schema.get("paths", {}).get(path)
@@ -79,7 +79,6 @@ def custom_openapi():
         "NotifyMeRequest",
         "AdminAddDeviceRequest",
         "AdminAddRoomRequest",
-        "AdminMachinesRequest",
         "SetFcmTokenRequest",
     ]
     for name in remove_token_in:
