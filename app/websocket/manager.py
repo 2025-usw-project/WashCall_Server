@@ -1,6 +1,6 @@
 from typing import Dict, List
 import json
-import asyncio
+from fastapi import WebSocket
 from loguru import logger
 
 from app.database import get_db_connection
@@ -9,49 +9,44 @@ from app.notifications.fcm import send_to_tokens
 
 class ConnectionManager:
     def __init__(self):
-        self.active: Dict[int, List[asyncio.Queue]] = {}
+        self.active: Dict[int, List[WebSocket]] = {}
 
-    async def connect(self, user_id: int) -> asyncio.Queue:
-        """SSE 연결을 위한 큐 생성 및 등록"""
-        queue = asyncio.Queue()
+    async def connect(self, user_id: int, websocket: WebSocket):
+        await websocket.accept()
         self.active.setdefault(user_id, [])
-        if queue not in self.active[user_id]:
-            self.active[user_id].append(queue)
-        logger.info("SSE connected user_id={} active_conns={}", user_id, len(self.active[user_id]))
-        return queue
+        if websocket not in self.active[user_id]:
+            self.active[user_id].append(websocket)
+        logger.info("WS connected user_id={} active_conns={}", user_id, len(self.active[user_id]))
 
-    def disconnect(self, user_id: int, queue: asyncio.Queue):
-        """SSE 연결 종료 및 큐 제거"""
+    def disconnect(self, user_id: int, websocket: WebSocket):
         conns = self.active.get(user_id)
         if not conns:
             return
         try:
-            conns.remove(queue)
+            conns.remove(websocket)
         except ValueError:
             pass
         if not conns:
             self.active.pop(user_id, None)
-        logger.info("SSE disconnected user_id={}", user_id)
+        logger.info("WS disconnected user_id={}", user_id)
 
     async def send_to_user(self, user_id: int, data: dict):
-        """사용자에게 메시지 전송 (큐에 추가)"""
         conns = list(self.active.get(user_id, []))
         if not conns:
             return
         text = json.dumps(data)
         safe = text if len(text) <= 1000 else text[:1000] + "..."
-        logger.info("SSE send user_id={} payload={} targets={}", user_id, safe, len(conns))
-        for queue in conns:
+        logger.info("WS send user_id={} payload={} targets={}", user_id, safe, len(conns))
+        for ws in conns:
             try:
-                await queue.put(data)
-            except Exception as e:
-                logger.warning("SSE queue put failed user_id={} error={}", user_id, str(e))
+                await ws.send_text(text)
+            except Exception:
                 # Drop broken connections on send failure
                 try:
-                    conns.remove(queue)
+                    conns.remove(ws)
                 except Exception:
                     pass
-                logger.warning("SSE send failed and connection dropped user_id={}", user_id)
+                logger.warning("WS send failed and connection dropped user_id={}", user_id)
 
 
 manager = ConnectionManager()
