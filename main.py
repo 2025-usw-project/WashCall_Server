@@ -60,6 +60,7 @@ def custom_openapi():
         "/set_fcm_token": ["post"],
         "/rooms": ["get"],
         "/device_subscribe": ["get"],
+        "/statistics/congestion": ["get"],
     }
     for path, methods in protected.items():
         path_item = openapi_schema.get("paths", {}).get(path)

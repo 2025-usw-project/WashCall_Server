@@ -355,7 +355,7 @@ async def get_rooms(
 
 
 @router.get("/statistics/congestion", response_model=CongestionResponse)
-async def get_congestion_statistics():
+async def get_congestion_statistics(authorization: str | None = Header(None)):
     """요일/시간대별 혼잡도(사용 수) 집계 반환.
 
     응답 형식 예시:
@@ -366,6 +366,13 @@ async def get_congestion_statistics():
       "일": [0..23]
     }
     """
+    # 인증 (헤더 Bearer 토큰 필수)
+    token = _resolve_token(authorization, None)
+    try:
+        get_current_user(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+
     days = ["월", "화", "수", "목", "금", "토", "일"]
     result = {d: [0] * 24 for d in days}
 
