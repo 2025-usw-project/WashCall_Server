@@ -1,14 +1,14 @@
 from fastapi import APIRouter
 from fastapi import HTTPException, WebSocket, Query, Header
 import time
-from app.android_service.schemas import (
+from app.web_service.schemas import (
     RegisterRequest, RegisterResponse,
     LoginRequest, LoginResponse,
     LogoutRequest,
     LoadRequest, LoadResponse, MachineItem,
     ReserveRequest, NotifyMeRequest,
     AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminAddRoomResponse,
-    DeviceSubscribeRequest,
+    DeviceSubscribeRequest, CongestionResponse,
 )
 from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
@@ -352,6 +352,50 @@ async def get_rooms(
         rows = cursor.fetchall() or []
     rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows ]
     return {"rooms": rooms}
+
+
+@router.get("/statistics/congestion", response_model=CongestionResponse)
+async def get_congestion_statistics(authorization: str | None = Header(None)):
+    """요일/시간대별 혼잡도(사용 수) 집계 반환.
+
+    응답 형식 예시:
+    {
+      "월": [0..23],
+      "화": [0..23],
+      ...
+      "일": [0..23]
+    }
+    """
+    # 인증 (헤더 Bearer 토큰 필수)
+    token = _resolve_token(authorization, None)
+    try:
+        get_current_user(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    days = ["월", "화", "수", "목", "금", "토", "일"]
+    result = {d: [0] * 24 for d in days}
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT busy_day, busy_time, busy_count FROM busy_table")
+            rows = cursor.fetchall() or []
+
+            for row in rows:
+                day = str(row.get("busy_day") or "")
+                hour = row.get("busy_time")
+                count = row.get("busy_count")
+                try:
+                    hour_int = int(hour)
+                except Exception:
+                    continue
+                if day in result and 0 <= hour_int <= 23:
+                    result[day][hour_int] = int(count or 0)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed to load congestion: {str(e)}")
+
+    return result
 
 @router.get("/debug")
 async def debug_dump():

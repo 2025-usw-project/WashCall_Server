@@ -1,18 +1,19 @@
 from dotenv import load_dotenv
-load_dotenv()
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 
 from app.arduino_service.router import router as arduino_router
-from app.android_service.router import router as android_router
+from app.web_service.router import router as android_router
 
 # 데이터베이스 연결 설정 추가
 from app.database import get_db_connection
 import logging
 from app.statistics.router import router as statistics_router
 
+
+load_dotenv()
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -62,6 +63,7 @@ def custom_openapi():
         "/set_fcm_token": ["post"],
         "/rooms": ["get"],
         "/device_subscribe": ["get"],
+        "/statistics/congestion": ["get"],
     }
     for path, methods in protected.items():
         path_item = openapi_schema.get("paths", {}).get(path)

@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import List
+from pydantic import BaseModel, conlist
+from typing import List, Dict
 
 
 class RegisterRequest(BaseModel):
@@ -83,3 +83,8 @@ class AdminAddRoomResponse(BaseModel):
 class SetFcmTokenRequest(BaseModel):
     access_token: str | None = None
     fcm_token: str
+
+
+class CongestionResponse(BaseModel):
+    """요일 키(월~일) -> 24길이 정수 배열 매핑"""
+    __root__: Dict[str, conlist(int, min_items=24, max_items=24)]
