@@ -1,7 +1,9 @@
 from dotenv import load_dotenv
+load_dotenv()
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 
 from app.arduino_service.router import router as arduino_router
 from app.android_service.router import router as android_router
@@ -9,8 +11,6 @@ from app.android_service.router import router as android_router
 # 데이터베이스 연결 설정 추가
 from app.database import get_db_connection
 import logging
-
-load_dotenv()
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -124,17 +124,24 @@ async def health():
 
 @app.on_event("startup")
 async def startup_event():
-    """서버 시작 시 데이터베이스 연결 확인"""
+    """서버 시작 시 데이터베이스 연결 확인 (백오프 재시도)"""
     logger.info("Starting Laundry API Server...")
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT VERSION()")
-            version = cursor.fetchone()
-            logger.info(f"Database connected successfully: MySQL {version}")
-    except Exception as e:
-        logger.error(f"Database connection failed: {str(e)}")
-        logger.warning("Server will start but database operations may fail")
+    last_error = None
+    for attempt in range(5):
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT VERSION()")
+                version = cursor.fetchone()
+                logger.info(f"Database connected successfully: MySQL {version}")
+                last_error = None
+                break
+        except Exception as e:
+            last_error = e
+            logger.error(f"DB connect attempt {attempt+1}/5 failed: {e}")
+            await asyncio.sleep(1 + attempt)
+    if last_error is not None:
+        logger.warning("DB not ready; server will start but database operations may fail")
 
 
 @app.on_event("shutdown")

@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 import mysql.connector
 from mysql.connector import Error, pooling
 from contextlib import contextmanager
@@ -16,19 +18,26 @@ DB_CONFIG = {
     'connection_timeout': int(os.getenv('DB_CONN_TIMEOUT', '5')),
 }
 
-# 연결 풀 생성 (가능 시), 실패 시 단일 연결로 폴백
+# 커넥션 풀은 지연 초기화: 최초 연결 시도 때 생성, 실패 시 단일 연결로 폴백
 connection_pool = None
-try:
-    connection_pool = pooling.MySQLConnectionPool(
-        pool_name="laundry_pool",
-        pool_size=5,
-        pool_reset_session=True,
-        **DB_CONFIG,
-    )
-    print("✓ MySQL 연결 풀 생성 성공")
-except Error as e:
-    print(f"✗ 연결 풀 생성 실패: {e}")
-    print("   직접 연결 방식으로 fallback됩니다.")
+
+def _init_pool_if_possible():
+    global connection_pool
+    if connection_pool is not None:
+        return
+    try:
+        connection_pool = pooling.MySQLConnectionPool(
+            pool_name="laundry_pool",
+            pool_size=5,
+            pool_reset_session=True,
+            **DB_CONFIG,
+        )
+        print("✓ MySQL 연결 풀 생성 성공")
+    except Error as e:
+        # 풀 생성 실패 시 폴백: 이후 단일 연결 사용
+        connection_pool = None
+        print(f"✗ 연결 풀 생성 실패: {e}")
+        print("   직접 연결 방식으로 fallback됩니다.")
 
 
 @contextmanager
@@ -36,6 +45,9 @@ def get_db_connection():
     """데이터베이스 연결을 관리하는 context manager"""
     connection = None
     try:
+        if connection_pool is None:
+            _init_pool_if_possible()
+
         if connection_pool is not None:
             connection = connection_pool.get_connection()
         else:
