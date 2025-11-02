@@ -426,27 +426,18 @@ async def debug_dump():
     return result
 
 @router.get("/status_update")
-async def status_update(
-    authorization: str | None = Header(None),
-    token: str | None = Query(None)
-):
-    """SSE (Server-Sent Events) 스트림으로 실시간 상태 업데이트 전송
-    
-    토큰은 헤더(Authorization: Bearer <token>) 또는 쿼리 파라미터(?token=<token>)로 전달 가능
-    """
-    # 헤더 또는 쿼리 파라미터에서 토큰 추출
-    resolved_token = _resolve_token(authorization, token)
-    
+async def status_update(token: str = Query(...)):
+    """SSE (Server-Sent Events) 스트림으로 실시간 상태 업데이트 전송"""
     # JWT 인증
     try:
-        payload = decode_jwt(resolved_token)
+        payload = decode_jwt(token)
         user_id = int(payload.get("sub"))
         # DB의 현재 토큰과 일치 확인
         with get_db_connection() as conn:
             cursor = conn.cursor(dictionary=True)
             cursor.execute("SELECT user_token FROM user_table WHERE user_id = %s", (user_id,))
             row = cursor.fetchone()
-            if not row or row.get("user_token") != resolved_token:
+            if not row or row.get("user_token") != token:
                 raise HTTPException(status_code=401, detail="invalid token")
     except HTTPException:
         raise
