@@ -9,7 +9,7 @@ project-root/
 │  ├─ arduino_service/
 │  │  ├─ router.py
 │  │  └─ schemas.py
-│  └─ android_service/
+│  └─ web_service/
 │     ├─ router.py
 │     └─ schemas.py
 ├─ main.py

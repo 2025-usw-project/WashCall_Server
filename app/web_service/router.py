@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi import HTTPException, WebSocket, Query, Header
 import time
-from app.android_service.schemas import (
+from app.web_service.schemas import (
     RegisterRequest, RegisterResponse,
     LoginRequest, LoginResponse,
     LogoutRequest,
