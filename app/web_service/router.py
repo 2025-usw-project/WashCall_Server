@@ -353,6 +353,43 @@ async def get_rooms(
     rooms = [{"room_id": int(r["room_id"]), "room_name": (r.get("room_name") or f"Room {r['room_id']}") } for r in rows ]
     return {"rooms": rooms}
 
+
+@router.get("/statistics/congestion")
+async def get_congestion_statistics():
+    """요일/시간대별 혼잡도(사용 수) 집계 반환.
+
+    응답 형식 예시:
+    {
+      "월": [0..23],
+      "화": [0..23],
+      ...
+      "일": [0..23]
+    }
+    """
+    days = ["월", "화", "수", "목", "금", "토", "일"]
+    result = {d: [0] * 24 for d in days}
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT busy_day, busy_time, busy_count FROM busy_table")
+            rows = cursor.fetchall() or []
+
+            for row in rows:
+                day = str(row.get("busy_day") or "")
+                hour = row.get("busy_time")
+                count = row.get("busy_count")
+                try:
+                    hour_int = int(hour)
+                except Exception:
+                    continue
+                if day in result and 0 <= hour_int <= 23:
+                    result[day][hour_int] = int(count or 0)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed to load congestion: {str(e)}")
+
+    return result
+
 @router.get("/debug")
 async def debug_dump():
     """Return all database tables and their rows dynamically as JSON.
