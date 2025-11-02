@@ -3,6 +3,7 @@ from .schemas import UpdateData, DeviceUpdateRequest, DeviceUpdateResponse
 from app.database import get_db_connection
 from app.websocket.manager import broadcast_room_status, broadcast_notify
 import json
+from app.statistics.router import update_busy_statistics
 
 router = APIRouter()
 
@@ -67,7 +68,7 @@ async def update(data: UpdateData):
                 """
                 cursor.execute(query, (data.status, data.battery, data.timestamp, data.machine_id))
 
-            # 2차, 만약 status가 FINISHED라면 표준값 INSERT + 기준점 자동 계산
+            # 2차, 만약 status가 FINISHED라면
             if data.status == "FINISHED":
                 cursor.execute(
                     "SELECT machine_uuid FROM machine_table WHERE machine_id=%s",
@@ -78,7 +79,7 @@ async def update(data: UpdateData):
                 if result is None:
                     raise HTTPException(status_code=404, detail="machine_id not found")
 
-                machine_uuid = result[0]
+                machine_uuid = result
 
                 # standard_table에 데이터 삽입
                 query2 = """
@@ -95,21 +96,23 @@ async def update(data: UpdateData):
                 # 새로운 기준점 자동 계산
                 calculate_and_update_thresholds(cursor, machine_uuid)
 
-            # ✅ 중요: DB 커밋을 먼저 실행 (WebSocket 브로드캐스트 전에)
+            # DB 커밋 (가장 중요!)
             conn.commit()
 
-            # ✅ 핵심 수정: 모든 상태 변경에 대해 WebSocket 알림 전송
-            # 상태가 변경될 때마다 구독 중인 사용자들에게 실시간 알림
+            # ✅ 혼잡도 테이블 업데이트 (NEW - 새로운 값 자동 처리)
+            if data.status == "FINISHED":
+                await update_busy_statistics(data.machine_id, data.timestamp)
+
+            # WebSocket 브로드캐스트
             if data.status in ("WASHING", "SPINNING", "FINISHED"):
-                # room 구독자들에게 알림
                 await broadcast_room_status(data.machine_id, data.status)
-                # 개별 기기 구독자들에게 알림  
                 await broadcast_notify(data.machine_id, data.status)
 
             return {"message": "received"}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
     
 
 @router.post("/device_update", response_model=DeviceUpdateResponse)
