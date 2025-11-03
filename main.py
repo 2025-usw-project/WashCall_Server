@@ -27,7 +27,7 @@ app.add_middleware(
     allow_origins=["*"],  # consider restricting to explicit origins in production
     allow_credentials=True,  # cookies won't be sent; bearer tokens must be set explicitly by clients
     allow_methods=["*"],
-    allow_headers=["Authorization", "Content-Type"],  # ensure Authorization is allowed in CORS preflight
+    allow_headers=["Authorization", "Content-Type", "ngrok-skip-browser-warning"],  # ngrok 헤더 허용
 )
 
 app.include_router(arduino_router, tags=["arduino"])
