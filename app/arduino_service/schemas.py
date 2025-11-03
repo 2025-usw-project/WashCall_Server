@@ -1,5 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel
+from typing import Optional
 
 class StatusEnum(str, Enum):
     WASHING = "WASHING"
@@ -15,7 +16,7 @@ class UpdateData(BaseModel):
     status: StatusEnum
     machine_type: str
     timestamp: int
-    battery: int
+    battery: Optional[int] = None
     wash_avg_magnitude: float = None  # FINISHED일 때만
     wash_max_magnitude: float = None
     spin_max_magnitude: float = None

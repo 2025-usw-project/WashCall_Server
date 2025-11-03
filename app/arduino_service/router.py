@@ -89,11 +89,20 @@ async def update(data: UpdateData):
 
             # 1차 UPDATE (항상 실행)
             if data.status in ("WASHING", "SPINNING", "FINISHED"):
-                query = """
-                UPDATE machine_table SET status=%s, battery=%s, timestamp=%s
-                WHERE machine_id=%s
-                """
-                cursor.execute(query, (data.status, data.battery, data.timestamp, data.machine_id))
+                 # ✅ battery가 None이면 기존값 유지, 아니면 업데이트
+                if data.battery is not None:
+                    query = """
+                    UPDATE machine_table SET status=%s, battery=%s, timestamp=%s
+                    WHERE machine_id=%s
+                    """
+                    cursor.execute(query, (data.status, data.battery, data.timestamp, data.machine_id))
+                else:
+                    # ✅ battery가 없으면 battery 컬럼 스킵
+                    query = """
+                    UPDATE machine_table SET status=%s, timestamp=%s
+                    WHERE machine_id=%s
+                    """
+                    cursor.execute(query, (data.status, data.timestamp, data.machine_id))
 
             # 2차, 만약 status가 FINISHED라면
             if data.status == "FINISHED":
