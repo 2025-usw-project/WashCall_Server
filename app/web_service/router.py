@@ -10,6 +10,7 @@ from app.web_service.schemas import (
     ReserveRequest, NotifyMeRequest,
     AdminAddDeviceRequest, SetFcmTokenRequest, AdminAddRoomRequest, AdminAddRoomResponse,
     DeviceSubscribeRequest, CongestionResponse,
+    SurveyRequest, SurveyResponse,
 )
 from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
@@ -397,6 +398,38 @@ async def get_congestion_statistics(authorization: str | None = Header(None)):
         raise HTTPException(status_code=500, detail=f"failed to load congestion: {str(e)}")
 
     return result
+
+
+@router.post("/survey", response_model=SurveyResponse)
+async def submit_survey(body: SurveyRequest, authorization: str | None = Header(None)):
+    """설문조사 제출
+    
+    만족도(1-5)와 건의사항을 받아서 데이터베이스에 저장합니다.
+    """
+    # 인증 (헤더 Bearer 토큰 필수)
+    token = _resolve_token(authorization, None)
+    try:
+        get_current_user(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    # 만족도 범위 검증 (Pydantic에서도 하지만 이중 체크)
+    if body.satisfaction < 1 or body.satisfaction > 5:
+        raise HTTPException(status_code=400, detail="satisfaction must be between 1 and 5")
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO survey_table (satisfaction, suggestion) VALUES (%s, %s)",
+                (body.satisfaction, body.suggestion)
+            )
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed to save survey: {str(e)}")
+
+    return SurveyResponse(message="survey ok")
+
 
 @router.get("/debug")
 async def debug_dump():
