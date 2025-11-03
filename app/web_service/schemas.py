@@ -88,3 +88,12 @@ class SetFcmTokenRequest(BaseModel):
 class CongestionResponse(RootModel[Dict[str, Annotated[List[int], Field(min_length=24, max_length=24)]]]):
     """요일 키(월~일) -> 24길이 정수 배열 매핑"""
     pass
+
+
+class SurveyRequest(BaseModel):
+    satisfaction: int = Field(..., ge=1, le=5, description="만족도 (1-5)")
+    suggestion: str = Field(..., description="건의사항")
+
+
+class SurveyResponse(BaseModel):
+    message: str

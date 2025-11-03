@@ -64,6 +64,7 @@ def custom_openapi():
         "/rooms": ["get"],
         "/device_subscribe": ["get"],
         "/statistics/congestion": ["get"],
+        "/survey": ["post"],
     }
     for path, methods in protected.items():
         path_item = openapi_schema.get("paths", {}).get(path)
