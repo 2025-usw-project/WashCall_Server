@@ -10,7 +10,7 @@ from app.web_service.router import router as android_router
 # 데이터베이스 연결 설정 추가
 from app.database import get_db_connection
 import logging
-from app.statistics.router import router as statistics_router
+
 
 
 load_dotenv()
@@ -32,7 +32,7 @@ app.add_middleware(
 
 app.include_router(arduino_router, tags=["arduino"])
 app.include_router(android_router, tags=["android"])
-app.include_router(statistics_router, prefix="/statistics", tags=["statistics"])
+
 
 
 def custom_openapi():

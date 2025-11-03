@@ -3,9 +3,36 @@ from .schemas import UpdateData, DeviceUpdateRequest, DeviceUpdateResponse
 from app.database import get_db_connection
 from app.websocket.manager import broadcast_room_status, broadcast_notify
 import json
-from app.statistics.router import update_busy_statistics
+from datetime import datetime
+import pytz
 
 router = APIRouter()
+
+WEEKDAY_MAP = {
+    0: '월',  # Monday
+    1: '화',  # Tuesday
+    2: '수',  # Wednesday
+    3: '목',  # Thursday
+    4: '금',  # Friday
+    5: '토',  # Saturday
+    6: '일'   # Sunday
+}
+
+KST = pytz.timezone('Asia/Seoul')
+
+
+def timestamp_to_weekday_hour(unix_timestamp):
+    """
+    Unix timestamp(초 단위)를 서울 시간대 기준으로 요일과 시간대로 변환
+    """
+    dt = datetime.fromtimestamp(unix_timestamp, tz=pytz.UTC)
+    dt_kst = dt.astimezone(KST)
+
+    weekday = dt_kst.weekday()
+    hour = dt_kst.hour
+
+    day_str = WEEKDAY_MAP[weekday]
+    return day_str, hour
 
 def calculate_and_update_thresholds(cursor, machine_uuid: int):
     # 1. 평균값 계산
@@ -101,7 +128,18 @@ async def update(data: UpdateData):
 
             # ✅ 혼잡도 테이블 업데이트 (NEW - 새로운 값 자동 처리)
             if data.status == "FINISHED":
-                await update_busy_statistics(data.machine_id, data.timestamp)
+                day_str, hour = timestamp_to_weekday_hour(data.timestamp)
+                
+                congestion_query = """
+                INSERT INTO busy_table (busy_day, busy_time, busy_count)
+                VALUES (%s, %s, 1)
+                ON DUPLICATE KEY UPDATE
+                    busy_count = busy_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """
+
+                cursor.execute(congestion_query, (day_str, hour))
+                conn.commit()
 
             # WebSocket 브로드캐스트
             if data.status in ("WASHING", "SPINNING", "FINISHED"):
