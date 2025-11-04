@@ -142,13 +142,98 @@ def update_congestion_for_range(cursor, start_timestamp: int, end_timestamp: int
         current_dt += timedelta(hours=1)
 
 
+def update_course_avg_time(cursor, course_name: str, elapsed_time: int):
+    """
+    코스별 평균 소요 시간 업데이트
+    ✅ elapsed_time은 초 단위로 입력받음
+    ✅ 분 단위로 변환해서 저장
+    """
+    # ✅ 음수/0 필터링
+    if elapsed_time <= 0:
+        logger.warning(f"⚠️ 유효하지 않은 시간({elapsed_time}초), 기록 안함")
+        return
+    
+    # ✅ 초를 분으로 변환 (핵심!)
+    elapsed_time_minutes = elapsed_time // 60  # 정수 나눗셈으로 분 계산
+    
+    logger.info(f"⏱️ 시간 변환: {elapsed_time}초 → {elapsed_time_minutes}분")
+    
+    try:
+        # 1단계: time_table에서 해당 코스 조회
+        query_select = """
+        SELECT avg_time, count_avg
+        FROM time_table
+        WHERE course_name = %s
+        """
+        cursor.execute(query_select, (course_name,))
+        result = cursor.fetchone()
+        
+        if result is None:
+            # 처음인 경우: 새로운 레코드 삽입 (분 단위)
+            query_insert = """
+            INSERT INTO time_table (course_name, avg_time, count_avg)
+            VALUES (%s, %s, %s)
+            """
+            # ✅ elapsed_time_minutes를 저장!
+            cursor.execute(query_insert, (course_name, elapsed_time_minutes, 1))
+            logger.info(f"✅ 새로운 코스 기록: {course_name} = {elapsed_time_minutes}분")
+        
+        else:
+            # ✅ 딕셔너리 또는 튜플 모두 지원
+            if isinstance(result, dict):
+                existing_avg = result.get("avg_time")
+                existing_count = result.get("count_avg")
+            else:
+                existing_avg = result[0]
+                existing_count = result[1]
+            
+            # NULL 체크
+            if existing_avg is None or existing_count is None or existing_count == 0:
+                logger.warning(f"NULL/0 값 감지: avg={existing_avg}, count={existing_count}")
+                # 처음이거나 잘못된 상태 → 새로 기록
+                query_insert = """
+                INSERT INTO time_table (course_name, avg_time, count_avg)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    avg_time = VALUES(avg_time),
+                    count_avg = VALUES(count_avg)
+                """
+                # ✅ elapsed_time_minutes를 저장!
+                cursor.execute(query_insert, (course_name, elapsed_time_minutes, 1))
+                logger.info(f"✅ 코스 '{course_name}' 새로 기록: {elapsed_time_minutes}분")
+                return
+            
+            # 새로운 평균 계산 (분 단위)
+            new_total_time = (existing_avg * existing_count) + elapsed_time_minutes  # ✅ 분 단위!
+            new_count = existing_count + 1
+            new_avg = int(new_total_time / new_count)
+            
+            logger.info(f"코스 '{course_name}' 평균 시간 계산:")
+            logger.info(f"  기존: {existing_avg}분 (횟수: {existing_count})")
+            logger.info(f"  새로운: {elapsed_time_minutes}분")
+            logger.info(f"  업데이트된 평균: {new_avg}분 (횟수: {new_count})")
+            
+            # 업데이트 (분 단위)
+            query_update = """
+            UPDATE time_table
+            SET avg_time = %s, count_avg = %s
+            WHERE course_name = %s
+            """
+            cursor.execute(query_update, (new_avg, new_count, course_name))
+            logger.info(f"✅ 코스 '{course_name}' 평균 시간 업데이트: {new_avg}분")
+    
+    except Exception as e:
+        logger.error(f"코스 평균 시간 업데이트 실패: {str(e)}", exc_info=True)
+        raise
+
+
 @router.post("/update")
 async def update(data: UpdateData):
     """
     Arduino 상태 업데이트 처리
-    - ✅ FINISHED → WASHING 전환 감지
-    - ✅ FINISHED 상태일 때 last_update 갱신
-    - ✅ 모든 상태 변경 시 DB 커밋
+    ✅ first_update가 NULL일 때 감지
+    ✅ elapsed_time 음수 필터링
+    ✅ count_avg = 0 문제 해결
     """
     try:
         # ===== 1단계: 입력값 검증 =====
@@ -212,11 +297,8 @@ async def update(data: UpdateData):
                 if data.status in ("WASHING", "SPINNING", "FINISHED"):
                     logger.info(f"상태 업데이트 시작: {data.status}")
                     
-                    # ✅ FINISHED 상태일 때만 last_update 갱신
                     if data.status == "FINISHED":
                         logger.info("✅ FINISHED 상태: last_update 갱신")
-                        
-                        # ✅ Python에서 현재 시간을 Unix timestamp (int)로 변환
                         current_time_int = int(datetime.now(KST).timestamp())
                         logger.info(f"현재 시간 (timestamp): {current_time_int}")
                         
@@ -226,7 +308,6 @@ async def update(data: UpdateData):
                             SET status=%s, battery=%s, timestamp=%s, last_update=%s
                             WHERE machine_id=%s
                             """
-                            logger.info(f"battery 포함 UPDATE (last_update={current_time_int})")
                             cursor.execute(query, (data.status, data.battery, data.timestamp, current_time_int, data.machine_id))
                         else:
                             query = """
@@ -234,17 +315,14 @@ async def update(data: UpdateData):
                             SET status=%s, timestamp=%s, last_update=%s
                             WHERE machine_id=%s
                             """
-                            logger.info(f"battery 제외 UPDATE (last_update={current_time_int})")
                             cursor.execute(query, (data.status, data.timestamp, current_time_int, data.machine_id))
                     else:
-                        # WASHING, SPINNING: last_update 갱신 안 함
                         if data.battery is not None:
                             query = """
                             UPDATE machine_table
                             SET status=%s, battery=%s, timestamp=%s
                             WHERE machine_id=%s
                             """
-                            logger.info(f"battery 포함 UPDATE")
                             cursor.execute(query, (data.status, data.battery, data.timestamp, data.machine_id))
                         else:
                             query = """
@@ -252,7 +330,6 @@ async def update(data: UpdateData):
                             SET status=%s, timestamp=%s
                             WHERE machine_id=%s
                             """
-                            logger.info(f"battery 제외 UPDATE")
                             cursor.execute(query, (data.status, data.timestamp, data.machine_id))
                     
                     rows_affected = cursor.rowcount
@@ -261,50 +338,82 @@ async def update(data: UpdateData):
             except Exception as e:
                 logger.error(f"상태 UPDATE 중 오류: {str(e)}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"상태 업데이트 실패: {str(e)}")
-            
+          
+          
             # ===== 5단계: FINISHED 처리 =====
             if data.status == "FINISHED":
                 try:
                     logger.info("FINISHED 상태: 추가 처리 시작")
                     
-                    # first_update 조회
+                    # ✅ SELECT에서 UNIX_TIMESTAMP 사용
                     cursor.execute(
-                        "SELECT first_update FROM machine_table WHERE machine_id=%s",
+                        """
+                        SELECT 
+                            UNIX_TIMESTAMP(first_update) as first_timestamp,
+                            last_update as last_timestamp,
+                            course_name
+                        FROM machine_table 
+                        WHERE machine_id=%s
+                        """,
                         (data.machine_id,)
                     )
-                    first_update_result = cursor.fetchone()
-                    first_update_db = first_update_result.get("first_update") if first_update_result else None
                     
-                    # first_update를 세탁 시작 시간으로 사용
-                    if first_update_db is None:
-                        logger.warning("first_update가 NULL입니다. last_update 사용")
-                        if last_update_db is None:
-                            logger.warning("last_update도 NULL입니다. 현재 timestamp 사용")
-                            start_timestamp = data.timestamp
-                        else:
-                            try:
-                                last_update_dt = last_update_db.replace(tzinfo=pytz.UTC).astimezone(KST)
-                                start_timestamp = int(last_update_dt.timestamp())
-                            except Exception as e:
-                                logger.error(f"last_update 변환 실패: {str(e)}")
-                                start_timestamp = data.timestamp
-                    else:
-                        # first_update 사용
+                    result = cursor.fetchone()
+                    
+                    if result is None:
+                        logger.error(f"machine_id {data.machine_id}를 찾을 수 없습니다")
+                        raise HTTPException(status_code=404, detail="Machine not found")
+                    
+                    first_timestamp = result.get("first_timestamp")
+                    last_timestamp = result.get("last_timestamp")
+                    course_name = result.get("course_name")
+                    
+                    logger.info(f"코스명: {course_name}")
+                    logger.info(f"first_timestamp: {first_timestamp} (None? {first_timestamp is None})")
+                    logger.info(f"last_timestamp: {last_timestamp} (None? {last_timestamp is None})")
+                    
+                    # ✅ 강화된 유효성 검사
+                    if (first_timestamp is not None and 
+                        last_timestamp is not None and 
+                        course_name is not None and
+                        isinstance(first_timestamp, (int, float)) and
+                        isinstance(last_timestamp, (int, float))):
                         try:
-                            first_update_dt = first_update_db.replace(tzinfo=pytz.UTC).astimezone(KST)
-                            start_timestamp = int(first_update_dt.timestamp())
-                            logger.info(f"✅ first_update 사용: {start_timestamp}")
+                            # ✅ 소요 시간 계산
+                            elapsed_time = int(last_timestamp) - int(first_timestamp)
+                            
+                            logger.info(f"elapsed_time: {int(last_timestamp)} - {int(first_timestamp)} = {elapsed_time}초")
+                            
+                            # ✅ 음수 체크 (가장 중요!)
+                            if elapsed_time < 0:
+                                logger.error(f"❌ 음수 시간 발생: {elapsed_time}초")
+                                logger.error(f"   first_ts: {first_timestamp} ({datetime.fromtimestamp(first_timestamp, tz=pytz.UTC).astimezone(KST) if first_timestamp else 'N/A'})")
+                                logger.error(f"   last_ts: {last_timestamp} ({datetime.fromtimestamp(last_timestamp, tz=pytz.UTC).astimezone(KST) if last_timestamp else 'N/A'})")
+                                logger.warning(f"⚠️ 음수 시간이므로 코스 시간 기록 스킵")
+                                elapsed_time = None
+                            
+                            elif elapsed_time == 0:
+                                logger.warning(f"⚠️ 0초 감지, 기록하지 않음")
+                                elapsed_time = None
+                            
+                            else:
+                                logger.info(f"✅ 유효한 시간: {elapsed_time}초 ({elapsed_time // 60}분 {elapsed_time % 60}초)")
+                            
+                            # ✅ 유효한 시간만 기록 (함수 내에서도 체크!)
+                            if elapsed_time is not None and elapsed_time > 0:
+                                update_course_avg_time(cursor, course_name, elapsed_time)
+                                logger.info(f"✅ {course_name} 평균 시간 업데이트 완료")
+                            else:
+                                logger.warning(f"⚠️ 코스 시간 기록 스킵: elapsed_time={elapsed_time}")
+                        
                         except Exception as e:
-                            logger.error(f"first_update 변환 실패: {str(e)}")
-                            start_timestamp = data.timestamp
+                            logger.error(f"코스별 시간 계산 중 오류: {str(e)}", exc_info=True)
                     
-                    end_timestamp = data.timestamp
-                    
-                    logger.info(
-                        f"세탁 시간 범위: "
-                        f"{datetime.fromtimestamp(start_timestamp, KST).strftime('%Y-%m-%d %H:%M:%S')} ~ "
-                        f"{datetime.fromtimestamp(end_timestamp, KST).strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
+                    else:
+                        logger.warning(f"필수 데이터 누락 또는 타입 오류:")
+                        logger.warning(f"  first_timestamp={first_timestamp}")
+                        logger.warning(f"  last_timestamp={last_timestamp}")
+                        logger.warning(f"  course_name={course_name}")
                     
                     # standard_table 삽입
                     try:
@@ -330,12 +439,19 @@ async def update(data: UpdateData):
                     except Exception as e:
                         logger.error(f"기준점 계산 실패: {str(e)}", exc_info=True)
                     
-                    # 혼잡도 업데이트
-                    try:
-                        update_congestion_for_range(cursor, start_timestamp, end_timestamp)
-                        logger.info("혼잡도 업데이트 완료")
-                    except Exception as e:
-                        logger.error(f"혼잡도 업데이트 실패: {str(e)}", exc_info=True)
+                    # ✅ 혼잡도 업데이트
+                    if (first_timestamp is not None and 
+                        last_timestamp is not None and
+                        isinstance(first_timestamp, (int, float)) and
+                        isinstance(last_timestamp, (int, float)) and
+                        (int(last_timestamp) - int(first_timestamp)) > 0):  # ← 양수만!
+                        try:
+                            update_congestion_for_range(cursor, int(first_timestamp), int(last_timestamp))
+                            logger.info("혼잡도 업데이트 완료")
+                        except Exception as e:
+                            logger.error(f"혼잡도 업데이트 실패: {str(e)}", exc_info=True)
+                    else:
+                        logger.warning("혼잡도 업데이트 스킵: timestamp 정보 부족 또는 음수")
                     
                     # first_update 초기화
                     try:
@@ -346,9 +462,10 @@ async def update(data: UpdateData):
                         logger.info("first_update 초기화 완료")
                     except Exception as e:
                         logger.error(f"first_update 초기화 실패: {str(e)}", exc_info=True)
-                    
+                
                 except Exception as e:
                     logger.error(f"FINISHED 처리 중 오류: {str(e)}", exc_info=True)
+                    
             
             # ===== 6단계: DB 커밋 ===== ✅ 모든 경우에 실행!
             try:
@@ -376,7 +493,7 @@ async def update(data: UpdateData):
         logger.error(f"예기치 않은 오류 발생: {str(e)}", exc_info=True)
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
-
+    
     
 
 @router.post("/device_update", response_model=DeviceUpdateResponse)
