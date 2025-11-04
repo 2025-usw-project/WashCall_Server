@@ -45,10 +45,22 @@ async def register(body: RegisterRequest):
 
         hashed = hash_password(body.user_password)
         role_int = 1 if (body.user_role is True) else 0
+        
+        # 유저 생성
         cursor.execute(
             "INSERT INTO user_table (user_username, user_password, user_role, user_snum) VALUES (%s, %s, %s, %s)",
             (body.user_username, hashed, role_int, body.user_snum)
         )
+        
+        # 새로 생성된 user_id 가져오기
+        new_user_id = cursor.lastrowid
+        
+        # 자동으로 1번 방 구독 추가
+        cursor.execute(
+            "INSERT INTO room_subscriptions (user_id, room_id) VALUES (%s, %s)",
+            (new_user_id, 1)
+        )
+        
         conn.commit()
     return RegisterResponse(message="register ok")
 
