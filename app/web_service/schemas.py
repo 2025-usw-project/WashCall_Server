@@ -99,3 +99,12 @@ class SurveyRequest(BaseModel):
 
 class SurveyResponse(BaseModel):
     message: str
+
+
+class StartCourseRequest(BaseModel):
+    machine_id: int
+    course_name: str
+
+
+class StartCourseResponse(BaseModel):
+    timer: int  # 예상 소요 시간 (분)

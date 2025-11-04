@@ -61,6 +61,7 @@ def custom_openapi():
         "/admin/add_device": ["post"],
         "/admin/add_room": ["post"],
         "/set_fcm_token": ["post"],
+        "/start_course": ["post"],
         "/rooms": ["get"],
         "/device_subscribe": ["get"],
         "/statistics/congestion": ["get"],
