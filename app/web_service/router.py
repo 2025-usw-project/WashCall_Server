@@ -137,11 +137,15 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
     user_id = int(user["user_id"])
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
+        
+        # 1. 세탁기 목록 조회 (machine_uuid 포함)
         if role_in_jwt == "ADMIN":
             # Admin: show machines in rooms associated to this admin (via room_subscriptions)
             cursor.execute(
                 """
                 SELECT m.machine_id,
+                       m.machine_uuid,
+                       m.room_id,
                        COALESCE(rt.room_name, m.room_name) AS room_name,
                        m.machine_name,
                        m.status
@@ -157,6 +161,8 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
             cursor.execute(
                 """
                 SELECT m.machine_id,
+                       m.machine_uuid,
+                       m.room_id,
                        COALESCE(rt.room_name, m.room_name) AS room_name,
                        m.machine_name,
                        m.status
@@ -168,16 +174,40 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 (user_id,)
             )
         rows = cursor.fetchall() or []
+        
+        # 2. 사용자의 알림 등록 정보 조회 (notify_subscriptions)
+        cursor.execute(
+            "SELECT machine_uuid FROM notify_subscriptions WHERE user_id = %s",
+            (user_id,)
+        )
+        notify_rows = cursor.fetchall() or []
+        notify_set = {row["machine_uuid"] for row in notify_rows}
+        
+        # 3. 사용자의 예약 정보 조회 (reservation_table)
+        # 사용자가 구독한 방들 중 하나라도 예약이 되어있으면 isreserved = 1
+        cursor.execute(
+            """
+            SELECT MAX(isreserved) as max_reserved
+            FROM reservation_table
+            WHERE user_id = %s
+            """,
+            (user_id,)
+        )
+        reserve_row = cursor.fetchone()
+        isreserved = int(reserve_row.get("max_reserved") or 0) if reserve_row else 0
 
+    # 4. 각 세탁기에 isusing 정보 추가
     machines = [
         MachineItem(
             machine_id=int(r["machine_id"]),
             room_name=r.get("room_name") or "",
             machine_name=r.get("machine_name") or "",
-            status=r.get("status") or ""
+            status=r.get("status") or "",
+            isusing=1 if r.get("machine_uuid") in notify_set else 0
         ) for r in rows
     ]
-    return LoadResponse(machine_list=machines)
+    
+    return LoadResponse(isreserved=isreserved, machine_list=machines)
 
 @router.post("/reserve")
 async def reserve(body: ReserveRequest, authorization: str | None = Header(None)):
