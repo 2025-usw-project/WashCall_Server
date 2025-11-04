@@ -37,7 +37,6 @@ app.add_middleware(
 
 app.include_router(arduino_router, tags=["arduino"])
 app.include_router(android_router, tags=["android"])
-app.include_router(arduino_router, prefix="/api/arduino", tags=["arduino"])
 
 
 def custom_openapi():

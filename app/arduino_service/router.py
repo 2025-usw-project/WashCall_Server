@@ -381,47 +381,57 @@ async def update(data: UpdateData):
 
 @router.post("/device_update", response_model=DeviceUpdateResponse)
 async def device_update(request: DeviceUpdateRequest):
+    """
+    기준점 조회 API
+    
+    요청 필드:
+    - machine_id: 세탁기 ID
+    
+    응답:
+    - NewWashThreshold: 새 세탁 기준점
+    - NewSpinThreshold: 새 탈수 기준점
+    """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
             # machine_table에서 해당 기기의 기준점 조회
             query = """
-                SELECT NewWashThreshold, NewSpinThreshold
-                FROM machine_table
-                WHERE machine_id = %s
+            SELECT NewWashThreshold, NewSpinThreshold
+            FROM machine_table
+            WHERE machine_id = %s
             """
             cursor.execute(query, (request.machine_id,))
             result = cursor.fetchone()
             
             if result is None:
+                logger.error(f"machine_id {request.machine_id}를 찾을 수 없습니다")
                 raise HTTPException(status_code=404, detail="machine_id not found")
             
             NewWashThreshold, NewSpinThreshold = result
             
+            logger.info(f"기준점 조회: machine_id={request.machine_id}, "
+                       f"Wash={NewWashThreshold}, Spin={NewSpinThreshold}")
+            
             # 기준점이 NULL이면 기본값 반환 (또는 에러)
             if NewWashThreshold is None or NewSpinThreshold is None:
+                logger.warning(f"기준점이 설정되지 않음: machine_id={request.machine_id}")
                 raise HTTPException(
-                    status_code=404, 
+                    status_code=404,
                     detail="Thresholds not calculated yet. Please complete at least one wash cycle."
                 )
             
-            # last_update 갱신 (선택사항)
-            update_query = """
-                UPDATE machine_table
-                SET last_update = %s
-                WHERE machine_id = %s
-            """
-            cursor.execute(update_query, (request.timestamp, request.machine_id))
-            conn.commit()
+            logger.info(f"✅ 기준점 조회 완료: machine_id={request.machine_id}")
             
             return DeviceUpdateResponse(
                 message="received",
                 NewWashThreshold=NewWashThreshold,
                 NewSpinThreshold=NewSpinThreshold
             )
-            
+    
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"기준점 조회 실패: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Device update failed: {str(e)}")
+    
