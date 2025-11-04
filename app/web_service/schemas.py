@@ -41,9 +41,11 @@ class MachineItem(BaseModel):
     room_name: str
     machine_name: str
     status: str
+    isusing: int  # 0: 알림 미등록, 1: 알림 등록됨
 
 
 class LoadResponse(BaseModel):
+    isreserved: int  # 0: 예약 안함, 1: 예약함
     machine_list: List[MachineItem]
 
 

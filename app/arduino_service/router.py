@@ -115,7 +115,7 @@ async def update(data: UpdateData):
                 if result is None:
                     raise HTTPException(status_code=404, detail="machine_id not found")
 
-                machine_uuid = result
+                machine_uuid = result[0]
 
                 # standard_table에 데이터 삽입
                 query2 = """
