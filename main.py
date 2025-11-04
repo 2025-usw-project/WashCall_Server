@@ -10,14 +10,19 @@ from app.web_service.router import router as android_router
 # 데이터베이스 연결 설정 추가
 from app.database import get_db_connection
 import logging
+from loguru import logger
 
 
 
 load_dotenv()
 
 # 로깅 설정
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.DEBUG,  # DEBUG 레벨로 모든 정보 출력
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+logger.info("FastAPI 애플리케이션 시작")
 
 app = FastAPI(title="Laundry API", version="1.0.0")
 
@@ -32,7 +37,7 @@ app.add_middleware(
 
 app.include_router(arduino_router, tags=["arduino"])
 app.include_router(android_router, tags=["android"])
-
+app.include_router(arduino_router, prefix="/api/arduino", tags=["arduino"])
 
 
 def custom_openapi():
