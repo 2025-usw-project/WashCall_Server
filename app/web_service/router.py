@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from fastapi import HTTPException, WebSocket, Query, Header
+from app.websocket.manager import broadcast_room_status, broadcast_notify
 from loguru import logger
 import time
 from app.web_service.schemas import (
@@ -372,48 +373,60 @@ async def set_fcm_token(body: SetFcmTokenRequest, authorization: str | None = He
 
 @router.post("/start_course", response_model=StartCourseResponse)
 async def start_course(body: StartCourseRequest, authorization: str | None = Header(None)):
-    """세탁 코스 시작
+    """세탁 코스 시작 - 상태도 WASHING으로 변경!"""
     
-    요청한 세탁기의 코스를 설정하고, 예상 소요 시간을 반환합니다.
-    """
-    # 인증 확인
     token = _resolve_token(authorization, None)
     try:
         get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
-
+    
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         
-        # 1. 해당 machine_id가 존재하는지 확인
+        # 1. machine_id 존재 확인
         cursor.execute(
-            "SELECT machine_uuid FROM machine_table WHERE machine_id = %s",
+            "SELECT machine_id, status FROM machine_table WHERE machine_id = %s",
             (body.machine_id,)
         )
         machine = cursor.fetchone()
+        
         if not machine:
             raise HTTPException(status_code=404, detail="machine not found")
         
-        # 2. machine_table에 course_name 저장
+        current_status = machine.get("status")
+        
+        # 2. ✅ course_name 저장 + 상태를 WASHING으로 변경
+        import time
         cursor.execute(
-            "UPDATE machine_table SET course_name = %s WHERE machine_id = %s",
-            (body.course_name, body.machine_id)
+            """
+            UPDATE machine_table 
+            SET course_name = %s, status = %s, timestamp = %s
+            WHERE machine_id = %s
+            """,
+            (body.course_name, "WASHING", int(time.time()), body.machine_id)
         )
         
-        # 3. time_table에서 해당 코스의 평균 시간 조회
+        # 3. time_table에서 평균 시간 조회
         cursor.execute(
             "SELECT avg_time FROM time_table WHERE course_name = %s",
             (body.course_name,)
         )
         time_row = cursor.fetchone()
-        
-        # avg_time이 없으면 기본값 30분
         timer = int(time_row.get("avg_time") or 30) if time_row else 30
         
         conn.commit()
-    
-    return StartCourseResponse(timer=timer)
+        
+        # ✅ 4. WebSocket 브로드캐스트! (중요!)
+        try:
+            await broadcast_room_status(body.machine_id, "WASHING")
+            await broadcast_notify(body.machine_id, "WASHING")
+        except Exception as e:
+            logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}")
+        
+        logger.info(f"✅ {body.machine_id} 세탁 시작: {body.course_name} ({timer}분)")
+        
+        return StartCourseResponse(timer=timer)
 
 
 @router.get("/rooms")
