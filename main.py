@@ -28,12 +28,22 @@ logger.info("FastAPI 애플리케이션 시작")
 app = FastAPI(title="Laundry API", version="1.0.0")
 
 # Android 앱과의 통신을 위해 CORS 허용
+# ❗️ 개선: 명시적인 origin 설정으로 중복 방지
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # consider restricting to explicit origins in production
-    allow_credentials=True,  # cookies won't be sent; bearer tokens must be set explicitly by clients
-    allow_methods=["*"],
-    allow_headers=["Authorization", "Content-Type", "ngrok-skip-browser-warning"],  # ngrok 헤더 허용
+    allow_origins=[
+        "https://washcall.space",
+        "https://www.washcall.space",
+        "http://localhost:5500",  # Live Server
+        "http://localhost:8080",  # 로컬 개발
+        "http://127.0.0.1:5500",
+        "http://127.0.0.1:8080",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "ngrok-skip-browser-warning"],
+    expose_headers=["*"],  # 클라이언트가 읽을 수 있는 헤더
+    max_age=600,  # Preflight 캐시 시간 (10분)
 )
 
 app.include_router(arduino_router, tags=["arduino"])
