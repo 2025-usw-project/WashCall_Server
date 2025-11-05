@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 import asyncio
 
 from app.arduino_service.router import router as arduino_router
@@ -37,6 +38,12 @@ app.add_middleware(
 
 app.include_router(arduino_router, tags=["arduino"])
 app.include_router(android_router, tags=["android"])
+
+
+@app.get("/")
+async def root():
+    """루트 경로 접근 시 Swagger UI로 리다이렉트"""
+    return RedirectResponse(url="/docs")
 
 
 def custom_openapi():
