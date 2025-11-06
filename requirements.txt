@@ -4,6 +4,7 @@ anyio==4.11.0
 click==8.3.0
 colorama==0.4.6
 fastapi==0.120.4
+firebase-admin==6.5.0
 h11==0.16.0
 httptools==0.7.1
 idna==3.11

@@ -26,19 +26,17 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
     Priority: Firebase Admin SDK (v1) using a service account JSON path from env.
     Fallback: Legacy HTTP API with server key from env.
     Returns a summary dict with attempted/sent counts.
+    
+    Note: Firebase Admin SDK is initialized in main.py startup event.
     """
     tokens = [t for t in (tokens or []) if t]
     if not tokens:
         return {"attempted": 0, "sent": 0}
 
     # First try Firebase Admin SDK (v1)
+    # Firebase Admin SDK는 main.py에서 이미 초기화됨
     if firebase_admin is not None:
         try:
-            if not firebase_admin._apps:  # type: ignore[attr-defined]
-                cred_path = os.getenv("FIREBASE_CREDENTIALS_FILE") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-                if cred_path:
-                    cred = credentials.Certificate(cred_path)  # type: ignore[call-arg]
-                    firebase_admin.initialize_app(cred)  # type: ignore[call-arg]
             if firebase_admin._apps:  # type: ignore[attr-defined]
                 # v1 send via Admin SDK
                 notif = messaging.Notification(title=title, body=body)  # type: ignore[call-arg]

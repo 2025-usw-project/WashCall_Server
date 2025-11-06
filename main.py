@@ -4,6 +4,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 import asyncio
+import os
 
 from app.arduino_service.router import router as arduino_router
 from app.web_service.router import router as android_router
@@ -12,6 +13,10 @@ from app.web_service.router import router as android_router
 from app.database import get_db_connection
 import logging
 from loguru import logger
+
+# Firebase Admin SDK 초기화
+import firebase_admin
+from firebase_admin import credentials
 
 
 
@@ -156,8 +161,23 @@ async def health():
 
 @app.on_event("startup")
 async def startup_event():
-    """서버 시작 시 데이터베이스 연결 확인 (백오프 재시도)"""
+    """서버 시작 시 Firebase 및 데이터베이스 초기화"""
     logger.info("Starting Laundry API Server...")
+    
+    # Firebase Admin SDK 초기화
+    try:
+        cred_path = os.getenv("FIREBASE_CREDENTIALS_FILE", "washcallproject-firebase-adminsdk-fbsvc-a48f08326a.json")
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+            logger.info(f"✅ Firebase Admin SDK initialized: {cred_path}")
+        else:
+            logger.info("Firebase Admin SDK already initialized")
+    except Exception as e:
+        logger.error(f"❌ Firebase Admin SDK initialization failed: {e}")
+        logger.warning("FCM push notifications will not work")
+    
+    # 데이터베이스 연결 확인 (백오프 재시도)
     last_error = None
     for attempt in range(5):
         try:
@@ -165,7 +185,7 @@ async def startup_event():
                 cursor = conn.cursor()
                 cursor.execute("SELECT VERSION()")
                 version = cursor.fetchone()
-                logger.info(f"Database connected successfully: MySQL {version}")
+                logger.info(f"✅ Database connected successfully: MySQL {version}")
                 last_error = None
                 break
         except Exception as e:
