@@ -1,98 +1,98 @@
-import os
-import json
 from typing import List, Optional, Dict
-from urllib import request as urlrequest
+from loguru import logger
 
-FCM_ENDPOINT_DEFAULT = "https://fcm.googleapis.com/fcm/send"
-
-# Try Firebase Admin SDK (v1 API)
+# Firebase Admin SDK (v1 API) - 필수
 try:
     import firebase_admin  # type: ignore
-    from firebase_admin import credentials, messaging  # type: ignore
-except Exception:  # pragma: no cover
-    firebase_admin = None  # type: ignore
-    credentials = None  # type: ignore
-    messaging = None  # type: ignore
+    from firebase_admin import messaging  # type: ignore
+except Exception as e:
+    logger.error(f"❌ Firebase Admin SDK import failed: {e}")
+    raise ImportError("Firebase Admin SDK is required for FCM v1 API") from e
 
 
-def _chunked(items: List[str], size: int = 900) -> List[List[str]]:
-    # FCM legacy API supports up to 1000 registration_ids per request; keep buffer under limit
+def _chunked(items: List[str], size: int = 500) -> List[List[str]]:
+    """FCM v1 API supports up to 500 tokens per multicast request"""
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict] = None) -> Dict:
-    """Send push notifications to device tokens.
-
-    Priority: Firebase Admin SDK (v1) using a service account JSON path from env.
-    Fallback: Legacy HTTP API with server key from env.
-    Returns a summary dict with attempted/sent counts.
+    """Send push notifications to device tokens using Firebase Admin SDK v1 API.
     
-    Note: Firebase Admin SDK is initialized in main.py startup event.
+    Firebase Admin SDK must be initialized in main.py startup event before calling this function.
+    
+    Args:
+        tokens: List of FCM device tokens (web or mobile)
+        title: Notification title
+        body: Notification body
+        data: Optional data payload (will be converted to strings)
+    
+    Returns:
+        Dict with keys: attempted (int), sent (int), v1 (bool), errors (list)
     """
+    # 토큰 정리
     tokens = [t for t in (tokens or []) if t]
     if not tokens:
-        return {"attempted": 0, "sent": 0}
+        logger.warning("⚠️ FCM 전송 스킵: 토큰이 없습니다")
+        return {"attempted": 0, "sent": 0, "v1": True}
 
-    # First try Firebase Admin SDK (v1)
-    # Firebase Admin SDK는 main.py에서 이미 초기화됨
-    if firebase_admin is not None:
-        try:
-            if firebase_admin._apps:  # type: ignore[attr-defined]
-                # v1 send via Admin SDK
-                notif = messaging.Notification(title=title, body=body)  # type: ignore[call-arg]
-                data_str = {str(k): str(v) for k, v in (data or {}).items()}
-                # FCM supports up to 500 tokens for send_multicast
-                attempted = 0
-                sent_total = 0
-                for batch in _chunked(tokens, size=500):
-                    msg = messaging.MulticastMessage(notification=notif, data=data_str, tokens=batch)  # type: ignore[call-arg]
-                    resp = messaging.send_multicast(msg)
-                    attempted += len(batch)
-                    sent_total += int(getattr(resp, "success_count", 0))
-                return {"attempted": attempted, "sent": sent_total, "v1": True}
-        except Exception:
-            # Fall through to legacy on any Admin SDK error
-            pass
+    # Firebase Admin SDK 초기화 확인
+    if not firebase_admin._apps:  # type: ignore[attr-defined]
+        logger.error("❌ Firebase Admin SDK가 초기화되지 않았습니다")
+        raise RuntimeError("Firebase Admin SDK must be initialized before sending notifications")
 
-    # Legacy HTTP fallback using server key
-    server_key = os.getenv("FCM_SERVER_KEY") or os.getenv("FIREBASE_SERVER_KEY")
-    if not server_key:
-        # No credentials configured; skip sending
-        return {"attempted": len(tokens), "sent": 0, "skipped": True}
-
-    endpoint = os.getenv("FCM_ENDPOINT", FCM_ENDPOINT_DEFAULT)
-    headers = {
-        "Authorization": f"key={server_key}",
-        "Content-Type": "application/json",
-    }
-
+    logger.info(f"🔥 FCM v1 API 사용 - 토큰 수: {len(tokens)}")
+    
+    # Notification 객체 생성
+    notif = messaging.Notification(title=title, body=body)  # type: ignore[call-arg]
+    
+    # Data payload를 문자열로 변환
+    data_str = {str(k): str(v) for k, v in (data or {}).items()}
+    
+    # 배치 전송 (FCM v1은 최대 500개 토큰/요청)
     attempted = 0
     sent_total = 0
-
-    for batch in _chunked(tokens, size=900):
-        payload = {
-            "registration_ids": batch,
-            "notification": {
-                "title": title,
-                "body": body,
-            },
-            "data": data or {},
+    failed_tokens = []
+    
+    try:
+        for batch in _chunked(tokens):
+            msg = messaging.MulticastMessage(
+                notification=notif,
+                data=data_str,
+                tokens=batch
+            )  # type: ignore[call-arg]
+            
+            # 전송
+            resp = messaging.send_multicast(msg)
+            attempted += len(batch)
+            success_count = int(getattr(resp, "success_count", 0))
+            failure_count = int(getattr(resp, "failure_count", 0))
+            sent_total += success_count
+            
+            # 실패한 토큰 기록
+            if failure_count > 0 and hasattr(resp, 'responses'):
+                for idx, response in enumerate(resp.responses):
+                    if not response.success:
+                        failed_tokens.append({
+                            "token": batch[idx][:20] + "...",
+                            "error": str(response.exception) if response.exception else "Unknown"
+                        })
+            
+            logger.info(f"📤 배치 전송 완료: success={success_count}, fail={failure_count}")
+        
+        logger.info(f"✅ FCM v1 전송 완료: attempted={attempted}, sent={sent_total}")
+        
+        result = {
+            "attempted": attempted,
+            "sent": sent_total,
+            "v1": True
         }
-        attempted += len(batch)
-        try:
-            req = urlrequest.Request(endpoint, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urlrequest.urlopen(req, timeout=10) as resp:
-                # Best-effort parse
-                resp_body = resp.read().decode("utf-8", errors="ignore")
-                try:
-                    obj = json.loads(resp_body)
-                    sent_total += int(obj.get("success", 0))
-                except Exception:
-                    # If not JSON, assume success when HTTP 200
-                    if 200 <= resp.status < 300:
-                        sent_total += len(batch)
-        except Exception:
-            # Ignore per-batch errors to avoid breaking the flow
-            pass
-
-    return {"attempted": attempted, "sent": sent_total, "legacy": True}
+        
+        if failed_tokens:
+            result["errors"] = failed_tokens
+            logger.warning(f"⚠️ 실패한 토큰 수: {len(failed_tokens)}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ FCM v1 API 전송 실패: {e}", exc_info=True)
+        raise
