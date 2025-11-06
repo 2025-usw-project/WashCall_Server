@@ -169,8 +169,13 @@ async def startup_event():
         cred_path = os.getenv("FIREBASE_CREDENTIALS_FILE", "washcallproject-firebase-adminsdk-fbsvc-a48f08326a.json")
         if not firebase_admin._apps:
             cred = credentials.Certificate(cred_path)
-            firebase_admin.initialize_app(cred)
+            
+            # HTTP 타임아웃 설정 추가
+            firebase_admin.initialize_app(cred, {
+                'httpTimeout': 10.0  # 10초 타임아웃
+            })
             logger.info(f"✅ Firebase Admin SDK initialized: {cred_path}")
+            logger.info(f"   HTTP Timeout: 10초")
         else:
             logger.info("Firebase Admin SDK already initialized")
     except Exception as e:

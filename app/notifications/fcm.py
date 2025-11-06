@@ -128,5 +128,7 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
         return result
         
     except Exception as e:
-        logger.error(f"❌ FCM v1 API 전송 실패: {e}", exc_info=True)
+        logger.error(f"❌ FCM v1 API 전송 실패: {e}")
+        logger.error(f"   에러 타입: {type(e).__name__}")
+        logger.error(f"   에러 내용: {repr(e)}", exc_info=True)
         raise
