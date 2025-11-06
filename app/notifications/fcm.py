@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict
+import time
 from loguru import logger
 
 # Firebase Admin SDK (v1 API) - 필수
@@ -13,6 +14,35 @@ except Exception as e:
 def _chunked(items: List[str], size: int = 500) -> List[List[str]]:
     """FCM v1 API supports up to 500 tokens per multicast request"""
     return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _retry_with_backoff(func, max_retries: int = 3, initial_delay: float = 1.0):
+    """네트워크 오류 시 지수 백오프로 재시도"""
+    delay = initial_delay
+    last_exception = None
+    
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            last_exception = e
+            error_str = str(e).lower()
+            
+            # 재시도 가능한 네트워크 오류인지 확인
+            if any(err in error_str for err in ['connection reset', 'timeout', 'network', 'unreachable']):
+                if attempt < max_retries - 1:
+                    logger.warning(f"⚠️ 네트워크 오류 발생 (시도 {attempt + 1}/{max_retries}): {e}")
+                    logger.info(f"🔄 {delay}초 후 재시도...")
+                    time.sleep(delay)
+                    delay *= 2  # 지수 백오프
+                else:
+                    logger.error(f"❌ 최대 재시도 횟수 초과 ({max_retries}회)")
+                    raise
+            else:
+                # 재시도 불가능한 오류는 즉시 발생
+                raise
+    
+    raise last_exception
 
 
 def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict] = None) -> Dict:
@@ -61,8 +91,12 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
                 tokens=batch
             )  # type: ignore[call-arg]
             
-            # 전송
-            resp = messaging.send_multicast(msg)
+            # 재시도 로직을 사용하여 전송
+            def send_batch():
+                return messaging.send_multicast(msg)
+            
+            resp = _retry_with_backoff(send_batch, max_retries=3, initial_delay=0.5)
+            
             attempted += len(batch)
             success_count = int(getattr(resp, "success_count", 0))
             failure_count = int(getattr(resp, "failure_count", 0))
