@@ -41,7 +41,7 @@ app.add_middleware(
         "http://127.0.0.1:5501",
         "http://127.0.0.1:8080",
         "https://2025-usw-project.github.io/WashCall-Web/",
-        "https://2025-usw-project.github.io/WashCall-Web/"
+        "https://2025-usw-project.github.io"
 
     ],
     allow_credentials=True,
