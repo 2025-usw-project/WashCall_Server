@@ -72,11 +72,16 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
 
     logger.info(f"🔥 FCM v1 API 사용 - 토큰 수: {len(tokens)}")
     
-    # Notification 객체 생성
-    notif = messaging.Notification(title=title, body=body)  # type: ignore[call-arg]
+    # ✅ 웹 푸시는 Data-only 메시지 권장 (Service Worker에서 처리)
+    # Notification 객체는 모바일에만 필요
+    # notif = messaging.Notification(title=title, body=body)
     
-    # Data payload를 문자열로 변환
-    data_str = {str(k): str(v) for k, v in (data or {}).items()}
+    # Data payload를 문자열로 변환 (title, body 포함)
+    data_str = {
+        "title": str(title),
+        "body": str(body),
+        **{str(k): str(v) for k, v in (data or {}).items()}
+    }
     
     # 배치 전송 (FCM v1은 최대 500개 토큰/요청)
     attempted = 0
@@ -85,15 +90,15 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
     
     try:
         for batch in _chunked(tokens):
+            # ✅ Data-only 메시지 (웹 푸시용)
             msg = messaging.MulticastMessage(
-                notification=notif,
                 data=data_str,
                 tokens=batch
             )  # type: ignore[call-arg]
             
             # 재시도 로직을 사용하여 전송
             def send_batch():
-                return messaging.send_multicast(msg)
+                return messaging.send_each_for_multicast(msg)
             
             resp = _retry_with_backoff(send_batch, max_retries=3, initial_delay=0.5)
             
@@ -130,5 +135,15 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
     except Exception as e:
         logger.error(f"❌ FCM v1 API 전송 실패: {e}")
         logger.error(f"   에러 타입: {type(e).__name__}")
-        logger.error(f"   에러 내용: {repr(e)}", exc_info=True)
+        logger.error(f"   토큰 수: {len(tokens)}")
+        logger.error(f"   제목: {title}")
+        logger.error(f"   본문: {body}")
+        
+        # 상세 에러 정보
+        if hasattr(e, 'cause'):
+            logger.error(f"   근본 원인: {e.cause}")
+        if hasattr(e, 'response'):
+            logger.error(f"   HTTP 응답: {e.response}")
+        
+        logger.error(f"   전체 스택: {repr(e)}", exc_info=True)
         raise
