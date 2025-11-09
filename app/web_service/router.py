@@ -19,6 +19,7 @@ from app.auth.security import (
 )
 from app.websocket.manager import manager
 from app.database import get_db_connection
+from app.utils.timer import compute_remaining_minutes
 
 router = APIRouter()
 
@@ -149,6 +150,8 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         role_in_jwt = ""
 
     user_id = int(user["user_id"])
+    now_ts = int(time.time())
+
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         
@@ -162,7 +165,9 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                        m.room_id,
                        COALESCE(rt.room_name, m.room_name) AS room_name,
                        m.machine_name,
-                       m.status
+                       m.status,
+                       m.course_name,
+                       UNIX_TIMESTAMP(m.first_update) AS first_ts
                 FROM machine_table m
                 JOIN room_subscriptions rs ON m.room_id = rs.room_id
                 LEFT JOIN room_table rt ON m.room_id = rt.room_id
@@ -179,7 +184,9 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                        m.room_id,
                        COALESCE(rt.room_name, m.room_name) AS room_name,
                        m.machine_name,
-                       m.status
+                       m.status,
+                       m.course_name,
+                       UNIX_TIMESTAMP(m.first_update) AS first_ts
                 FROM machine_table m
                 JOIN room_subscriptions rs ON m.room_id = rs.room_id
                 LEFT JOIN room_table rt ON m.room_id = rt.room_id
@@ -189,6 +196,28 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
             )
         rows = cursor.fetchall() or []
         
+        # 2-a. 코스 평균 시간 미리 로드
+        course_names = {row.get("course_name") for row in rows if row.get("course_name")}
+        course_avg_map: dict[str, int] = {}
+        if course_names:
+            placeholders = ",".join(["%s"] * len(course_names))
+            cursor.execute(
+                f"SELECT course_name, avg_time FROM time_table WHERE course_name IN ({placeholders})",
+                tuple(course_names),
+            )
+            for course_row in cursor.fetchall() or []:
+                course_name = course_row.get("course_name")
+                avg_time_val = course_row.get("avg_time")
+                if course_name and avg_time_val is not None:
+                    try:
+                        course_avg_map[course_name] = int(avg_time_val)
+                    except Exception:
+                        logger.warning(
+                            "load: avg_time parsing failed for course=%s value=%s",
+                            course_name,
+                            avg_time_val,
+                        )
+
         # 2. 사용자의 알림 등록 정보 조회 (notify_subscriptions)
         cursor.execute(
             "SELECT machine_uuid FROM notify_subscriptions WHERE user_id = %s",
@@ -211,16 +240,36 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         isreserved = int(reserve_row.get("max_reserved") or 0) if reserve_row else 0
 
     # 4. 각 세탁기에 isusing 정보 추가
-    machines = [
-        MachineItem(
-            machine_id=int(r["machine_id"]),
-            room_name=r.get("room_name") or "",
-            machine_name=r.get("machine_name") or "",
-            status=r.get("status") or "",
-            isusing=1 if r.get("machine_uuid") in notify_set else 0
-        ) for r in rows
-    ]
-    
+    machines: list[MachineItem] = []
+    for r in rows:
+        status = (r.get("status") or "").upper()
+        course_name = r.get("course_name")
+        first_ts_val = r.get("first_ts")
+        first_ts_int = None
+        if first_ts_val is not None:
+            try:
+                first_ts_int = int(first_ts_val)
+            except Exception:
+                logger.warning("load: invalid first_ts value=%s for machine_id=%s", first_ts_val, r.get("machine_id"))
+
+        timer_val: int | None = None
+        if status in {"WASHING", "SPINNING"} and course_name:
+            avg_minutes = course_avg_map.get(course_name)
+            timer_val, negative = compute_remaining_minutes(first_ts_int, avg_minutes, now_ts)
+            if negative:
+                timer_val = None
+
+        machines.append(
+            MachineItem(
+                machine_id=int(r["machine_id"]),
+                room_name=r.get("room_name") or "",
+                machine_name=r.get("machine_name") or "",
+                status=r.get("status") or "",
+                isusing=1 if r.get("machine_uuid") in notify_set else 0,
+                timer=timer_val,
+            )
+        )
+
     return LoadResponse(isreserved=isreserved, machine_list=machines)
 
 @router.post("/reserve")
