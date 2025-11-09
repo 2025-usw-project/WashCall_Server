@@ -1,10 +1,13 @@
-from typing import Dict, List
+import time
 import json
+from typing import Dict, List
+
 from fastapi import WebSocket
 from loguru import logger
 
 from app.database import get_db_connection
 from app.notifications.fcm import send_to_tokens
+from app.utils.timer import compute_remaining_minutes
 
 
 class ConnectionManager:
@@ -57,10 +60,12 @@ async def broadcast_room_status(machine_id: int, status: str):
     방 구독자에게 WebSocket + FCM 알림 전송
     ❗️ FINISHED 상태일 때만 FCM 푸시 알림 전송 (알림 스팸 방지)
     """
+    now_ts = int(time.time())
+
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT room_id, room_name, machine_name FROM machine_table WHERE machine_id = %s",
+            "SELECT room_id, room_name, machine_name, course_name, UNIX_TIMESTAMP(first_update) AS first_ts FROM machine_table WHERE machine_id = %s",
             (machine_id,)
         )
         m = cursor.fetchone()
@@ -71,6 +76,25 @@ async def broadcast_room_status(machine_id: int, status: str):
         room_id = m["room_id"]
         room_name = m.get("room_name", "세탁실")
         machine_name = m.get("machine_name", "세탁기")
+        course_name = m.get("course_name")
+        first_ts = m.get("first_ts")
+        avg_minutes = None
+
+        if course_name:
+            cursor.execute(
+                "SELECT avg_time FROM time_table WHERE course_name = %s",
+                (course_name,)
+            )
+            row_avg = cursor.fetchone()
+            if row_avg and row_avg.get("avg_time") is not None:
+                try:
+                    avg_minutes = int(row_avg.get("avg_time"))
+                except Exception:
+                    logger.warning("broadcast_room_status: avg_time parse failed course=%s value=%s", course_name, row_avg.get("avg_time"))
+
+        timer_minutes, negative = compute_remaining_minutes(first_ts, avg_minutes, now_ts)
+        if negative:
+            timer_minutes = None
         
         cursor.execute(
             "SELECT DISTINCT user_id FROM room_subscriptions WHERE room_id = %s",
@@ -86,7 +110,8 @@ async def broadcast_room_status(machine_id: int, status: str):
             "status": status,
             "room_id": room_id,
             "room_name": room_name,
-            "machine_name": machine_name
+            "machine_name": machine_name,
+            "timer": timer_minutes,
         })
     
     # 2. FCM 푸시 알림은 FINISHED 상태일 때만
@@ -140,9 +165,14 @@ async def broadcast_notify(machine_id: int, status: str):
     ❗️ FINISHED 상태일 때만 FCM 푸시 알림 전송 (알림 스팸 방지)
     ❗️ FINISHED 후 알림 자동 해제
     """
+    now_ts = int(time.time())
+
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT machine_uuid, machine_name, room_id FROM machine_table WHERE machine_id = %s", (machine_id,))
+        cursor.execute(
+            "SELECT machine_uuid, machine_name, room_id, course_name, UNIX_TIMESTAMP(first_update) AS first_ts FROM machine_table WHERE machine_id = %s",
+            (machine_id,)
+        )
         mu = cursor.fetchone()
         if not mu:
             logger.warning(f"broadcast_notify: machine_id={machine_id} not found")
@@ -150,6 +180,25 @@ async def broadcast_notify(machine_id: int, status: str):
         
         machine_uuid = mu.get("machine_uuid")
         machine_name = mu.get("machine_name", "세탁기")
+        course_name = mu.get("course_name")
+        first_ts = mu.get("first_ts")
+        avg_minutes = None
+
+        if course_name:
+            cursor.execute(
+                "SELECT avg_time FROM time_table WHERE course_name = %s",
+                (course_name,)
+            )
+            avg_row = cursor.fetchone()
+            if avg_row and avg_row.get("avg_time") is not None:
+                try:
+                    avg_minutes = int(avg_row.get("avg_time"))
+                except Exception:
+                    logger.warning("broadcast_notify: avg_time parse failed course=%s value=%s", course_name, avg_row.get("avg_time"))
+
+        timer_minutes, negative = compute_remaining_minutes(first_ts, avg_minutes, now_ts)
+        if negative:
+            timer_minutes = None
         
         cursor.execute(
             "SELECT user_id FROM notify_subscriptions WHERE machine_uuid = %s",
@@ -162,7 +211,8 @@ async def broadcast_notify(machine_id: int, status: str):
         await manager.send_to_user(int(u["user_id"]), {
             "type": "notify",
             "machine_id": machine_id,
-            "status": status
+            "status": status,
+            "timer": timer_minutes,
         })
     
     # 2. FCM 푸시 알림은 FINISHED 상태일 때만
