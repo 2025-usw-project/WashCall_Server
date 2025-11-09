@@ -423,59 +423,101 @@ async def set_fcm_token(body: SetFcmTokenRequest, authorization: str | None = He
 @router.post("/start_course", response_model=StartCourseResponse)
 async def start_course(body: StartCourseRequest, authorization: str | None = Header(None)):
     """세탁 코스 시작 - 상태도 WASHING으로 변경!"""
-    
+
     token = _resolve_token(authorization, None)
     try:
         get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
-    
+
+    now_ts = int(time.time())
+    timer_minutes: int | None = None
+    negative_time = False
+
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        
-        # 1. machine_id 존재 확인
+
+        # 1. machine_id 존재 확인 + first_update 조회
         cursor.execute(
-            "SELECT machine_id, status FROM machine_table WHERE machine_id = %s",
+            """
+            SELECT machine_id,
+                   status,
+                   UNIX_TIMESTAMP(first_update) AS first_ts
+            FROM machine_table
+            WHERE machine_id = %s
+            """,
             (body.machine_id,)
         )
         machine = cursor.fetchone()
-        
+
         if not machine:
             raise HTTPException(status_code=404, detail="machine not found")
-        
-        current_status = machine.get("status")
-        
-        # 2. ✅ course_name 저장 + 상태를 WASHING으로 변경
-        import time
-        cursor.execute(
-            """
-            UPDATE machine_table 
-            SET course_name = %s, status = %s, timestamp = %s
-            WHERE machine_id = %s
-            """,
-            (body.course_name, "WASHING", int(time.time()), body.machine_id)
-        )
-        
-        # 3. time_table에서 평균 시간 조회
+
+        first_ts = machine.get("first_ts")
+
+        # 2. time_table에서 평균 시간 조회 (분 단위)
         cursor.execute(
             "SELECT avg_time FROM time_table WHERE course_name = %s",
             (body.course_name,)
         )
         time_row = cursor.fetchone()
-        timer = int(time_row.get("avg_time") or 30) if time_row else 30
-        
+        avg_minutes: int | None = None
+        if time_row and time_row.get("avg_time") is not None:
+            try:
+                avg_minutes = int(time_row.get("avg_time"))
+            except Exception:
+                logger.warning(
+                    "start_course: avg_time parsing failed for course=%s value=%s",
+                    body.course_name,
+                    time_row.get("avg_time"),
+                )
+
+        timer_minutes, negative_time = compute_remaining_minutes(first_ts, avg_minutes, now_ts)
+        if negative_time:
+            timer_minutes = None
+
+        # 3. machine_table 상태 업데이트 (first_update 갱신, 필요 시 라벨링)
+        set_clauses = [
+            "status = %s",
+            "timestamp = %s",
+            "first_update = FROM_UNIXTIME(%s)",
+        ]
+        params: list = [
+            "WASHING",
+            now_ts,
+            now_ts,
+        ]
+
+        if not negative_time:
+            set_clauses.append("course_name = %s")
+            params.append(body.course_name)
+        else:
+            set_clauses.append("course_name = NULL")
+
+        update_sql = f"UPDATE machine_table SET {', '.join(set_clauses)} WHERE machine_id = %s"
+        params.append(body.machine_id)
+        cursor.execute(update_sql, tuple(params))
+
         conn.commit()
-        
+
         # ✅ 4. WebSocket 브로드캐스트! (중요!)
         try:
             await broadcast_room_status(body.machine_id, "WASHING")
             await broadcast_notify(body.machine_id, "WASHING")
         except Exception as e:
             logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}")
-        
-        logger.info(f"✅ {body.machine_id} 세탁 시작: {body.course_name} ({timer}분)")
-        
-        return StartCourseResponse(timer=timer)
+
+        logger.info(
+            "✅ %s 세탁 시작: %s (avg=%s분, timer=%s분)",
+            body.machine_id,
+            body.course_name,
+            avg_minutes,
+            timer_minutes,
+        )
+
+        return StartCourseResponse(
+            timer=timer_minutes,
+        )
 
 
 @router.get("/rooms")
