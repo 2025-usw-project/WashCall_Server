@@ -2,11 +2,10 @@ from fastapi import APIRouter, HTTPException
 from .schemas import UpdateData, DeviceUpdateRequest, DeviceUpdateResponse
 from app.database import get_db_connection
 from app.websocket.manager import broadcast_room_status, broadcast_notify
-import json
 from datetime import datetime, timedelta
+import traceback
 import pytz
 import logging
-import traceback
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -266,7 +265,6 @@ async def update(data: UpdateData):
                     raise HTTPException(status_code=404, detail=f"machine_id {data.machine_id} not found")
                 
                 current_status = db_result.get("status")
-                last_update_db = db_result.get("last_update")
                 machine_uuid = db_result.get("machine_uuid")
                 
                 logger.info(f"DB 조회 완료: current_status={current_status}, machine_uuid={machine_uuid}")
@@ -279,7 +277,7 @@ async def update(data: UpdateData):
             
             # ===== 3단계: FINISHED → WASHING 전환 감지 =====
             if current_status == "FINISHED" and data.status == "WASHING":
-                logger.info(f"✅ FINISHED → WASHING 전환 감지! first_update 기록")
+                logger.info("✅ FINISHED → WASHING 전환 감지! first_update 기록")
                 
                 try:
                     first_update_query = """
@@ -389,11 +387,11 @@ async def update(data: UpdateData):
                                 logger.error(f"❌ 음수 시간 발생: {elapsed_time}초")
                                 logger.error(f"   first_ts: {first_timestamp} ({datetime.fromtimestamp(first_timestamp, tz=pytz.UTC).astimezone(KST) if first_timestamp else 'N/A'})")
                                 logger.error(f"   last_ts: {last_timestamp} ({datetime.fromtimestamp(last_timestamp, tz=pytz.UTC).astimezone(KST) if last_timestamp else 'N/A'})")
-                                logger.warning(f"⚠️ 음수 시간이므로 코스 시간 기록 스킵")
+                                logger.warning("⚠️ 음수 시간이므로 코스 시간 기록 스킵")
                                 elapsed_time = None
                             
                             elif elapsed_time == 0:
-                                logger.warning(f"⚠️ 0초 감지, 기록하지 않음")
+                                logger.warning("⚠️ 0초 감지, 기록하지 않음")
                                 elapsed_time = None
                             
                             else:
@@ -410,7 +408,7 @@ async def update(data: UpdateData):
                             logger.error(f"코스별 시간 계산 중 오류: {str(e)}", exc_info=True)
                     
                     else:
-                        logger.warning(f"필수 데이터 누락 또는 타입 오류:")
+                        logger.warning("필수 데이터 누락 또는 타입 오류:")
                         logger.warning(f"  first_timestamp={first_timestamp}")
                         logger.warning(f"  last_timestamp={last_timestamp}")
                         logger.warning(f"  course_name={course_name}")
@@ -453,16 +451,6 @@ async def update(data: UpdateData):
                     else:
                         logger.warning("혼잡도 업데이트 스킵: timestamp 정보 부족 또는 음수")
                     
-                    # first_update 초기화
-                    try:
-                        cursor.execute(
-                            "UPDATE machine_table SET first_update = NULL WHERE machine_id = %s",
-                            (data.machine_id,)
-                        )
-                        logger.info("first_update 초기화 완료")
-                    except Exception as e:
-                        logger.error(f"first_update 초기화 실패: {str(e)}", exc_info=True)
-                
                 except Exception as e:
                     logger.error(f"FINISHED 처리 중 오류: {str(e)}", exc_info=True)
                     
