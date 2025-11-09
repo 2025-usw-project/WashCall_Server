@@ -42,6 +42,7 @@ class MachineItem(BaseModel):
     machine_name: str
     status: str
     isusing: int  # 0: 알림 미등록, 1: 알림 등록됨
+    timer: int | None = None  # 남은 시간(분)
 
 
 class LoadResponse(BaseModel):
@@ -107,4 +108,4 @@ class StartCourseRequest(BaseModel):
 
 
 class StartCourseResponse(BaseModel):
-    timer: int  # 예상 소요 시간 (분)
+    timer: int | None  # 남은 시간 (분)
