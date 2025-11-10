@@ -1,5 +1,60 @@
+from __future__ import annotations
+
 from pydantic import BaseModel, RootModel, Field
-from typing import List, Dict, Annotated
+from typing import List, Dict, Annotated, Optional
+
+
+class TimeContext(BaseModel):
+    iso_timestamp: str
+    weekday: str
+    hour: int
+    is_holiday: bool
+    is_weekend: bool
+
+
+class WeatherContext(BaseModel):
+    source: str = "KMA"
+    base_time: Optional[str] = None
+    forecast_time: Optional[str] = None
+    precipitation_probability: Optional[float] = None
+    precipitation_type: Optional[str] = None
+    rainfall_last_hour: Optional[float] = None
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
+
+
+class RoomSummary(BaseModel):
+    room_id: int
+    room_name: str
+    machines_total: int
+    machines_busy: int
+    machines_idle: int
+    avg_remaining_minutes: Optional[float] = None
+    max_remaining_minutes: Optional[float] = None
+    reservation_count: int = 0
+    notify_count: int = 0
+    estimated_wait_minutes: Optional[float] = None
+
+
+class AlertContext(BaseModel):
+    recent_finished_count: int = 0
+    active_notify_subscriptions: int = 0
+
+
+class TotalsContext(BaseModel):
+    machines_total: int
+    machines_busy: int
+    machines_idle: int
+    reservations_total: int
+    notify_total: int
+
+
+class StatusContext(BaseModel):
+    time: TimeContext
+    weather: WeatherContext | None = None
+    totals: TotalsContext
+    rooms: List[RoomSummary]
+    alerts: AlertContext
 
 
 class RegisterRequest(BaseModel):
@@ -48,6 +103,7 @@ class MachineItem(BaseModel):
 class LoadResponse(BaseModel):
     isreserved: int  # 0: 예약 안함, 1: 예약함
     machine_list: List[MachineItem]
+    status_context: StatusContext | None = None
 
 
 class ReserveRequest(BaseModel):
