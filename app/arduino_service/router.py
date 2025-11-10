@@ -143,10 +143,12 @@ def update_congestion_for_range(cursor, start_timestamp: int, end_timestamp: int
 
 def update_course_avg_time(cursor, course_name: str, elapsed_time: int):
     """
-    코스별 평균 소요 시간 업데이트
+    코스별 평균 소요 시간 업데이트 (🔥 이상치 필터링 적용)
     ✅ elapsed_time은 초 단위로 입력받음
     ✅ 분 단위로 변환해서 저장
+    ✅ 기존 평균의 ±50% 범위를 벗어나는 이상치 데이터 필터링
     """
+    
     # ✅ 음수/0 필터링
     if elapsed_time <= 0:
         logger.warning(f"⚠️ 유효하지 않은 시간({elapsed_time}초), 기록 안함")
@@ -154,7 +156,6 @@ def update_course_avg_time(cursor, course_name: str, elapsed_time: int):
     
     # ✅ 초를 분으로 변환 (핵심!)
     elapsed_time_minutes = elapsed_time // 60  # 정수 나눗셈으로 분 계산
-    
     logger.info(f"⏱️ 시간 변환: {elapsed_time}초 → {elapsed_time_minutes}분")
     
     try:
@@ -176,53 +177,178 @@ def update_course_avg_time(cursor, course_name: str, elapsed_time: int):
             # ✅ elapsed_time_minutes를 저장!
             cursor.execute(query_insert, (course_name, elapsed_time_minutes, 1))
             logger.info(f"✅ 새로운 코스 기록: {course_name} = {elapsed_time_minutes}분")
+            return
         
+        # ✅ 딕셔너리 또는 튜플 모두 지원
+        if isinstance(result, dict):
+            existing_avg = result.get("avg_time")
+            existing_count = result.get("count_avg")
         else:
-            # ✅ 딕셔너리 또는 튜플 모두 지원
-            if isinstance(result, dict):
-                existing_avg = result.get("avg_time")
-                existing_count = result.get("count_avg")
-            else:
-                existing_avg = result[0]
-                existing_count = result[1]
-            
-            # NULL 체크
-            if existing_avg is None or existing_count is None or existing_count == 0:
-                logger.warning(f"NULL/0 값 감지: avg={existing_avg}, count={existing_count}")
-                # 처음이거나 잘못된 상태 → 새로 기록
-                query_insert = """
-                INSERT INTO time_table (course_name, avg_time, count_avg)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    avg_time = VALUES(avg_time),
-                    count_avg = VALUES(count_avg)
-                """
-                # ✅ elapsed_time_minutes를 저장!
-                cursor.execute(query_insert, (course_name, elapsed_time_minutes, 1))
-                logger.info(f"✅ 코스 '{course_name}' 새로 기록: {elapsed_time_minutes}분")
-                return
-            
-            # 새로운 평균 계산 (분 단위)
-            new_total_time = (existing_avg * existing_count) + elapsed_time_minutes  # ✅ 분 단위!
-            new_count = existing_count + 1
-            new_avg = int(new_total_time / new_count)
-            
-            logger.info(f"코스 '{course_name}' 평균 시간 계산:")
-            logger.info(f"  기존: {existing_avg}분 (횟수: {existing_count})")
-            logger.info(f"  새로운: {elapsed_time_minutes}분")
-            logger.info(f"  업데이트된 평균: {new_avg}분 (횟수: {new_count})")
-            
-            # 업데이트 (분 단위)
-            query_update = """
-            UPDATE time_table
-            SET avg_time = %s, count_avg = %s
-            WHERE course_name = %s
+            existing_avg = result[0]
+            existing_count = result[1]
+        
+        # NULL 체크
+        if existing_avg is None or existing_count is None or existing_count == 0:
+            logger.warning(f"NULL/0 값 감지: avg={existing_avg}, count={existing_count}")
+            # 처음이거나 잘못된 상태 → 새로 기록
+            query_insert = """
+            INSERT INTO time_table (course_name, avg_time, count_avg)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                avg_time = VALUES(avg_time),
+                count_avg = VALUES(count_avg)
             """
-            cursor.execute(query_update, (new_avg, new_count, course_name))
-            logger.info(f"✅ 코스 '{course_name}' 평균 시간 업데이트: {new_avg}분")
-    
+            # ✅ elapsed_time_minutes를 저장!
+            cursor.execute(query_insert, (course_name, elapsed_time_minutes, 1))
+            logger.info(f"✅ 코스 '{course_name}' 새로 기록: {elapsed_time_minutes}분")
+            return
+        
+        # ========== 🔥 이상치 필터링 로직 (핵심!) ==========
+        # 기존 평균의 ±50% 범위 계산
+        lower_bound = existing_avg * 0.5  # 하한선: 평균의 50%
+        upper_bound = existing_avg * 1.5  # 상한선: 평균의 150%
+        
+        logger.info(f"📊 이상치 필터 범위: {lower_bound:.1f}분 ~ {upper_bound:.1f}분")
+        logger.info(f"📊 현재 데이터: {elapsed_time_minutes}분 (기존 평균: {existing_avg}분)")
+        
+        # 이상치 검사
+        if elapsed_time_minutes < lower_bound or elapsed_time_minutes > upper_bound:
+            logger.warning(f"⚠️ 이상치 감지! {elapsed_time_minutes}분은 범위 [{lower_bound:.1f}, {upper_bound:.1f}]를 벗어남")
+            logger.warning(f"⚠️ 코스 '{course_name}'의 평균 시간 업데이트를 건너뜀 (데이터 오염 방지)")
+            logger.info(f"   - 기존 평균: {existing_avg}분 (횟수: {existing_count})")
+            logger.info(f"   - 거부된 값: {elapsed_time_minutes}분")
+            return  # 이상치는 평균 계산에 포함하지 않음
+        
+        logger.info(f"✅ 정상 데이터 확인: {elapsed_time_minutes}분은 유효 범위 내")
+        # ====================================================
+        
+        # 새로운 평균 계산 (분 단위)
+        new_total_time = (existing_avg * existing_count) + elapsed_time_minutes  # ✅ 분 단위!
+        new_count = existing_count + 1
+        new_avg = int(new_total_time / new_count)
+        
+        logger.info(f"코스 '{course_name}' 평균 시간 계산:")
+        logger.info(f"  기존: {existing_avg}분 (횟수: {existing_count})")
+        logger.info(f"  새로운: {elapsed_time_minutes}분")
+        logger.info(f"  업데이트된 평균: {new_avg}분 (횟수: {new_count})")
+        
+        # 업데이트 (분 단위)
+        query_update = """
+        UPDATE time_table
+        SET avg_time = %s, count_avg = %s
+        WHERE course_name = %s
+        """
+        cursor.execute(query_update, (new_avg, new_count, course_name))
+        logger.info(f"✅ 코스 '{course_name}' 평균 시간 업데이트: {new_avg}분")
+        
     except Exception as e:
         logger.error(f"코스 평균 시간 업데이트 실패: {str(e)}", exc_info=True)
+        raise
+
+
+def update_segment_avg_time(cursor, course_name: str, elapsed_minutes: int, field_name: str):
+    """
+    특정 구간의 평균 시간 업데이트
+    
+    Parameters:
+    - course_name: 코스 이름 (예: '표준', '쾌속')
+    - elapsed_minutes: 경과 시간 (분 단위)
+    - field_name: 'avg_washing_time' 또는 'avg_spinning_time'
+    
+    🔥 이상치 필터링: 기존 평균의 ±50% 범위만 수락
+    """
+    
+    # ✅ 음수 또는 0 필터링
+    if elapsed_minutes <= 0:
+        logger.warning(f"⚠️ {field_name}: 유효하지 않은 시간({elapsed_minutes}분), 기록 안함")
+        return
+    
+    try:
+        # 1단계: time_table에서 해당 필드 조회
+        query_select = f"""
+            SELECT {field_name}, count_avg
+            FROM time_table
+            WHERE course_name = %s
+        """
+        
+        cursor.execute(query_select, (course_name,))
+        result = cursor.fetchone()
+        
+        if result is None:
+            # 처음인 경우: 새로운 레코드 삽입
+            query_insert = f"""
+                INSERT INTO time_table (course_name, {field_name}, count_avg)
+                VALUES (%s, %s, 1)
+                ON DUPLICATE KEY UPDATE
+                {field_name} = VALUES({field_name}),
+                count_avg = VALUES(count_avg)
+            """
+            cursor.execute(query_insert, (course_name, elapsed_minutes))
+            logger.info(f"✅ 새로운 코스 '{course_name}' {field_name} 기록: {elapsed_minutes}분")
+            return
+        
+        # ✅ 딕셔너리 또는 튜플 모두 지원
+        if isinstance(result, dict):
+            existing_avg = result.get(field_name)
+            existing_count = result.get("count_avg")
+        else:
+            existing_avg = result[0]
+            existing_count = result[1]
+        
+        # ✅ NULL 체크
+        if existing_avg is None or existing_count is None or existing_count == 0:
+            logger.warning(f"⚠️ {field_name} NULL/0 값 감지: avg={existing_avg}, count={existing_count}")
+            query_insert = f"""
+                INSERT INTO time_table (course_name, {field_name}, count_avg)
+                VALUES (%s, %s, 1)
+                ON DUPLICATE KEY UPDATE
+                {field_name} = VALUES({field_name}),
+                count_avg = VALUES(count_avg)
+            """
+            cursor.execute(query_insert, (course_name, elapsed_minutes))
+            logger.info(f"✅ 코스 '{course_name}' {field_name} 새로 기록: {elapsed_minutes}분")
+            return
+        
+        # ========== 🔥 이상치 필터링 로직 ==========
+        # 기존 평균의 ±50% 범위 계산
+        lower_bound = existing_avg * 0.5
+        upper_bound = existing_avg * 1.5
+        
+        logger.info(f"📊 {field_name} 필터 범위: {lower_bound:.1f}분 ~ {upper_bound:.1f}분")
+        logger.info(f"📊 현재 데이터: {elapsed_minutes}분 (기존 평균: {existing_avg}분)")
+        
+        # 이상치 검사
+        if elapsed_minutes < lower_bound or elapsed_minutes > upper_bound:
+            logger.warning(f"⚠️ {field_name} 이상치 감지! {elapsed_minutes}분은 범위 [{lower_bound:.1f}, {upper_bound:.1f}]를 벗어남")
+            logger.info(f"   - 기존 평균: {existing_avg}분 (횟수: {existing_count})")
+            logger.info(f"   - 거부된 값: {elapsed_minutes}분")
+            return
+        
+        logger.info(f"✅ {field_name} 정상 데이터 확인: {elapsed_minutes}분은 유효 범위 내")
+        
+        # ====================================================
+        
+        # 새로운 평균 계산
+        new_total_time = (existing_avg * existing_count) + elapsed_minutes
+        new_count = existing_count + 1
+        new_avg = int(new_total_time / new_count)
+        
+        logger.info(f"코스 '{course_name}' {field_name} 계산:")
+        logger.info(f" 기존: {existing_avg}분 (횟수: {existing_count})")
+        logger.info(f" 새로운: {elapsed_minutes}분")
+        logger.info(f" 업데이트된 평균: {new_avg}분 (횟수: {new_count})")
+        
+        # 업데이트
+        query_update = f"""
+            UPDATE time_table
+            SET {field_name} = %s, count_avg = %s
+            WHERE course_name = %s
+        """
+        cursor.execute(query_update, (new_avg, new_count, course_name))
+        logger.info(f"✅ 코스 '{course_name}' {field_name} 업데이트: {new_avg}분")
+        
+    except Exception as e:
+        logger.error(f"{field_name} 업데이트 실패: {str(e)}", exc_info=True)
         raise
 
 
@@ -289,7 +415,56 @@ async def update(data: UpdateData):
                     logger.info(f"first_update 기록 완료: {data.timestamp}")
                 except Exception as e:
                     logger.error(f"first_update 기록 실패: {str(e)}", exc_info=True)
-            
+                    
+            # ===== 3-1단계: WASHING → SPINNING 전환 감지 (새로 추가!) =====
+            if current_status == "WASHING" and data.status == "SPINNING":
+                logger.info("✅ WASHING → SPINNING 전환 감지! spinning_update 기록")
+                
+                try:
+                    # spinning_update 기록
+                    spinning_update_query = """
+                        UPDATE machine_table
+                        SET spinning_update = %s
+                        WHERE machine_id = %s
+                    """
+                    cursor.execute(spinning_update_query, (data.timestamp, data.machine_id))
+                    logger.info(f"spinning_update 기록 완료: {data.timestamp}")
+                    
+                except Exception as e:
+                    logger.error(f"spinning_update 기록 실패: {str(e)}", exc_info=True)
+                
+                # 🔥 세탁 시간 계산 및 기록
+                try:
+                    cursor.execute(
+                        """
+                        SELECT 
+                            UNIX_TIMESTAMP(first_update) as first_timestamp,
+                            course_name
+                        FROM machine_table
+                        WHERE machine_id=%s
+                        """,
+                        (data.machine_id,)
+                    )
+                    
+                    result = cursor.fetchone()
+                    if result and result.get("first_timestamp"):
+                        first_timestamp = result.get("first_timestamp")
+                        course_name = result.get("course_name")
+                        
+                        # 세탁 시간 = spinning_update(현재) - first_update
+                        washing_time_seconds = int(data.timestamp) - int(first_timestamp)
+                        
+                        if washing_time_seconds > 0 and course_name:
+                            washing_time_minutes = washing_time_seconds // 60
+                            logger.info(f"세탁 시간 계산: {data.timestamp} - {first_timestamp} = {washing_time_seconds}초 = {washing_time_minutes}분")
+                            update_segment_avg_time(cursor, course_name, washing_time_minutes, "avg_washing_time")
+                            logger.info(f"✅ 세탁 시간 업데이트 완료")
+                        else:
+                            logger.warning(f"⚠️ 세탁 시간 계산 실패: washing_time={washing_time_seconds}초, course_name={course_name}")
+                
+                except Exception as e:
+                    logger.error(f"세탁 시간 계산 실패: {str(e)}", exc_info=True)
+                        
             # ===== 4단계: machine_table 상태 업데이트 =====
             try:
                 if data.status in ("WASHING", "SPINNING", "FINISHED"):
@@ -347,9 +522,10 @@ async def update(data: UpdateData):
                     cursor.execute(
                         """
                         SELECT 
-                            UNIX_TIMESTAMP(first_update) as first_timestamp,
-                            last_update as last_timestamp,
-                            course_name
+                        UNIX_TIMESTAMP(first_update) as first_timestamp,
+                        last_update as last_timestamp,
+                        spinning_update,
+                        course_name
                         FROM machine_table 
                         WHERE machine_id=%s
                         """,
@@ -363,12 +539,31 @@ async def update(data: UpdateData):
                         raise HTTPException(status_code=404, detail="Machine not found")
                     
                     first_timestamp = result.get("first_timestamp")
+                    spinning_update = result.get("spinning_update")
                     last_timestamp = result.get("last_timestamp")
                     course_name = result.get("course_name")
                     
                     logger.info(f"코스명: {course_name}")
-                    logger.info(f"first_timestamp: {first_timestamp} (None? {first_timestamp is None})")
-                    logger.info(f"last_timestamp: {last_timestamp} (None? {last_timestamp is None})")
+                    logger.info(f"first_timestamp (세탁 시작): {first_timestamp}")
+                    logger.info(f"spinning_update (탈수 시작): {spinning_update}")  # 🔥 새로 추가
+                    logger.info(f"last_timestamp (종료): {last_timestamp}")
+                    
+                    if (spinning_update is not None and 
+                        last_timestamp is not None and 
+                        course_name is not None):
+                        
+                        spinning_time_seconds = int(last_timestamp) - int(spinning_update)
+                        
+                        if spinning_time_seconds > 0:
+                            spinning_time_minutes = spinning_time_seconds // 60
+                            logger.info(f"탈수 시간 계산: {last_timestamp} - {spinning_update} = {spinning_time_seconds}초 = {spinning_time_minutes}분")
+                            update_segment_avg_time(cursor, course_name, spinning_time_minutes, "avg_spinning_time")
+                            logger.info(f"✅ 탈수 시간 기록 완료")
+                        else:
+                            logger.warning(f"⚠️ 탈수 시간 계산 실패: spinning_time={spinning_time_seconds}초")
+                    else:
+                        logger.warning(f"⚠️ 탈수 시간 계산 필수 데이터 누락 (스킵)")
+                        logger.warning(f"   spinning_update={spinning_update}, last_timestamp={last_timestamp}, course_name={course_name}")
                     
                     # ✅ 강화된 유효성 검사
                     if (first_timestamp is not None and 
