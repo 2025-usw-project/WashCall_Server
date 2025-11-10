@@ -1,8 +1,21 @@
+from collections import defaultdict
+from datetime import datetime
+import time
+from statistics import mean
+
+import holidays
+import pytz
 from fastapi import APIRouter
 from fastapi import HTTPException, WebSocket, Query, Header
-from app.websocket.manager import broadcast_room_status, broadcast_notify
+from fastapi.concurrency import run_in_threadpool
 from loguru import logger
-import time
+
+from app.auth.security import (
+    hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
+)
+from app.database import get_db_connection
+from app.services.kma_weather import fetch_kma_weather
+from app.utils.timer import compute_remaining_minutes
 from app.web_service.schemas import (
     RegisterRequest, RegisterResponse,
     LoginRequest, LoginResponse,
@@ -13,13 +26,10 @@ from app.web_service.schemas import (
     DeviceSubscribeRequest, CongestionResponse,
     SurveyRequest, SurveyResponse,
     StartCourseRequest, StartCourseResponse,
+    StatusContext, TimeContext, WeatherContext, TotalsContext, RoomSummary, AlertContext,
 )
-from app.auth.security import (
-    hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
-)
+from app.websocket.manager import broadcast_room_status, broadcast_notify
 from app.websocket.manager import manager
-from app.database import get_db_connection
-from app.utils.timer import compute_remaining_minutes
 
 router = APIRouter()
 
@@ -163,7 +173,6 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
 
-    # Read role from JWT (for future branching if needed)
     try:
         payload = decode_jwt(token)
         role_in_jwt = str(payload.get("role", "")).upper()
@@ -173,12 +182,18 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
     user_id = int(user["user_id"])
     now_ts = int(time.time())
 
+    rows: list[dict] = []
+    course_avg_map: dict[str, int] = {}
+    notify_set: set[str] = set()
+    isreserved = 0
+    room_reservation_counts: dict[int, int] = {}
+    room_notify_counts: dict[int, int] = {}
+    recent_finished_count = 0
+
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
-        
-        # 1. 세탁기 목록 조회 (machine_uuid 포함)
+
         if role_in_jwt == "ADMIN":
-            # Admin: show machines in rooms associated to this admin (via room_subscriptions)
             cursor.execute(
                 """
                 SELECT m.machine_id,
@@ -194,10 +209,9 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 LEFT JOIN room_table rt ON m.room_id = rt.room_id
                 WHERE rs.user_id = %s
                 """,
-                (user_id,)
+                (user_id,),
             )
         else:
-            # User: show machines in rooms the user subscribed to
             cursor.execute(
                 """
                 SELECT m.machine_id,
@@ -213,13 +227,11 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 LEFT JOIN room_table rt ON m.room_id = rt.room_id
                 WHERE rs.user_id = %s
                 """,
-                (user_id,)
+                (user_id,),
             )
         rows = cursor.fetchall() or []
-        
-        # 2-a. 코스 평균 시간 미리 로드
+
         course_names = {row.get("course_name") for row in rows if row.get("course_name")}
-        course_avg_map: dict[str, int] = {}
         if course_names:
             placeholders = ",".join(["%s"] * len(course_names))
             cursor.execute(
@@ -239,29 +251,78 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                             avg_time_val,
                         )
 
-        # 2. 사용자의 알림 등록 정보 조회 (notify_subscriptions)
         cursor.execute(
             "SELECT machine_uuid FROM notify_subscriptions WHERE user_id = %s",
-            (user_id,)
+            (user_id,),
         )
         notify_rows = cursor.fetchall() or []
         notify_set = {row["machine_uuid"] for row in notify_rows}
-        
-        # 3. 사용자의 예약 정보 조회 (reservation_table)
-        # 사용자가 구독한 방들 중 하나라도 예약이 되어있으면 isreserved = 1
+
         cursor.execute(
             """
             SELECT MAX(isreserved) as max_reserved
             FROM reservation_table
             WHERE user_id = %s
             """,
-            (user_id,)
+            (user_id,),
         )
         reserve_row = cursor.fetchone()
         isreserved = int(reserve_row.get("max_reserved") or 0) if reserve_row else 0
 
-    # 4. 각 세탁기에 isusing 정보 추가
+        room_ids = {int(row["room_id"]) for row in rows if row.get("room_id") is not None}
+        if room_ids:
+            placeholders_rooms = ",".join(["%s"] * len(room_ids))
+
+            cursor.execute(
+                f"""
+                SELECT room_id, COUNT(*) AS cnt
+                FROM reservation_table
+                WHERE room_id IN ({placeholders_rooms}) AND isreserved = 1
+                GROUP BY room_id
+                """,
+                tuple(room_ids),
+            )
+            for rec in cursor.fetchall() or []:
+                room_reservation_counts[int(rec.get("room_id"))] = int(rec.get("cnt") or 0)
+
+            cursor.execute(
+                f"""
+                SELECT m.room_id, COUNT(*) AS cnt
+                FROM notify_subscriptions ns
+                JOIN machine_table m ON ns.machine_uuid = m.machine_uuid
+                WHERE m.room_id IN ({placeholders_rooms})
+                GROUP BY m.room_id
+                """,
+                tuple(room_ids),
+            )
+            for rec in cursor.fetchall() or []:
+                room_notify_counts[int(rec.get("room_id"))] = int(rec.get("cnt") or 0)
+
+            lookback_ts = now_ts - 1800  # 30분 내 FINISHED 장비 수
+            params = tuple(room_ids) + ("FINISHED", lookback_ts)
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS cnt
+                FROM machine_table
+                WHERE room_id IN ({placeholders_rooms})
+                  AND status = %s
+                  AND timestamp >= %s
+                """,
+                params,
+            )
+            finished_row = cursor.fetchone()
+            recent_finished_count = int(finished_row.get("cnt") or 0) if finished_row else 0
+
     machines: list[MachineItem] = []
+    room_stats: dict[int, dict] = defaultdict(lambda: {
+        "room_name": "",
+        "total": 0,
+        "busy": 0,
+        "timers": [],
+    })
+
+    busy_statuses = {"WASHING", "SPINNING"}
+
     for r in rows:
         status = (r.get("status") or "").upper()
         course_name = r.get("course_name")
@@ -274,7 +335,7 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 logger.warning("load: invalid first_ts value=%s for machine_id=%s", first_ts_val, r.get("machine_id"))
 
         timer_val: int | None = None
-        if status in {"WASHING", "SPINNING"} and course_name:
+        if status in busy_statuses and course_name:
             avg_minutes = course_avg_map.get(course_name)
             timer_val, negative = compute_remaining_minutes(first_ts_int, avg_minutes, now_ts)
             if negative:
@@ -291,7 +352,91 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
             )
         )
 
-    return LoadResponse(isreserved=isreserved, machine_list=machines)
+        room_id = int(r.get("room_id") or 0)
+        stats = room_stats[room_id]
+        stats["room_name"] = r.get("room_name") or stats["room_name"]
+        stats["total"] += 1
+        if status in busy_statuses:
+            stats["busy"] += 1
+        if timer_val is not None:
+            stats["timers"].append(timer_val)
+
+    kst = pytz.timezone("Asia/Seoul")
+    now_dt = datetime.now(tz=kst)
+    weekday_labels = ["월", "화", "수", "목", "금", "토", "일"]
+    weekday_label = weekday_labels[now_dt.weekday()]
+    kr_holidays = holidays.KR()
+    is_holiday = now_dt.date() in kr_holidays
+    is_weekend = now_dt.weekday() >= 5
+
+    time_context = TimeContext(
+        iso_timestamp=now_dt.isoformat(),
+        weekday=weekday_label,
+        hour=now_dt.hour,
+        is_holiday=is_holiday,
+        is_weekend=is_weekend,
+    )
+
+    weather_raw = await run_in_threadpool(fetch_kma_weather, now_dt)
+    weather_context = WeatherContext(**weather_raw) if weather_raw else None
+
+    room_summaries: list[RoomSummary] = []
+    for room_id, stats in room_stats.items():
+        total = stats["total"]
+        busy = stats["busy"]
+        idle = max(total - busy, 0)
+        timers = stats["timers"]
+        avg_remaining = mean(timers) if timers else None
+        max_remaining = max(timers) if timers else None
+        reservation_count = room_reservation_counts.get(room_id, 0)
+        notify_count = room_notify_counts.get(room_id, 0)
+
+        estimated_wait: float | None = None
+        if max_remaining is not None:
+            per_cycle = avg_remaining if avg_remaining is not None else max_remaining
+            estimated_wait = max_remaining + reservation_count * (per_cycle or 0)
+
+        room_summaries.append(
+            RoomSummary(
+                room_id=room_id,
+                room_name=stats["room_name"],
+                machines_total=total,
+                machines_busy=busy,
+                machines_idle=idle,
+                avg_remaining_minutes=avg_remaining,
+                max_remaining_minutes=max_remaining,
+                reservation_count=reservation_count,
+                notify_count=notify_count,
+                estimated_wait_minutes=estimated_wait,
+            )
+        )
+
+    totals = TotalsContext(
+        machines_total=sum(stats["total"] for stats in room_stats.values()),
+        machines_busy=sum(stats["busy"] for stats in room_stats.values()),
+        machines_idle=sum(max(stats["total"] - stats["busy"], 0) for stats in room_stats.values()),
+        reservations_total=sum(room_reservation_counts.values()),
+        notify_total=sum(room_notify_counts.values()),
+    )
+
+    alerts = AlertContext(
+        recent_finished_count=recent_finished_count,
+        active_notify_subscriptions=sum(room_notify_counts.values()),
+    )
+
+    status_context = StatusContext(
+        time=time_context,
+        weather=weather_context,
+        totals=totals,
+        rooms=room_summaries,
+        alerts=alerts,
+    )
+
+    return LoadResponse(
+        isreserved=isreserved,
+        machine_list=machines,
+        status_context=status_context,
+    )
 
 @router.post("/reserve")
 async def reserve(body: ReserveRequest, authorization: str | None = Header(None)):

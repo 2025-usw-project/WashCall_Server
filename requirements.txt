@@ -16,6 +16,8 @@ PyJWT
 python-dotenv
 pytz
 PyYAML
+requests
+holidays
 sniffio
 starlette
 typing-inspection
