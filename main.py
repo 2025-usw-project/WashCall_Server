@@ -8,6 +8,7 @@ import os
 
 from app.arduino_service.router import router as arduino_router
 from app.web_service.router import router as android_router
+from app.websocket.manager import start_timer_sync_loop, stop_timer_sync_loop
 
 # 데이터베이스 연결 설정 추가
 from app.database import get_db_connection
@@ -195,11 +196,17 @@ async def startup_event():
     if last_error is not None:
         logger.warning("DB not ready; server will start but database operations may fail")
 
+    # Timer sync loop 시작
+    await start_timer_sync_loop()
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """서버 종료 시 정리 작업"""
     logger.info("Shutting down Laundry API Server...")
+
+    # Timer sync loop 종료
+    await stop_timer_sync_loop()
 
 
 if __name__ == "__main__":
