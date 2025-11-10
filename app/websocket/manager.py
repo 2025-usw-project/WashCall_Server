@@ -22,15 +22,35 @@ class ConnectionManager:
         logger.info("WS connected user_id={} active_conns={}", user_id, len(self.active[user_id]))
 
     def disconnect(self, user_id: int, websocket: WebSocket):
+    
         conns = self.active.get(user_id)
+        
         if not conns:
             return
+        
         try:
             conns.remove(websocket)
         except ValueError:
             pass
+        
+        # 🔥 모든 연결이 끊겼을 때 last_login 기록
         if not conns:
             self.active.pop(user_id, None)
+            
+            # WebSocket 완전히 끊김 = 마지막으로 온라인이었던 시간
+            current_time = int(time.time())
+            
+            try:
+                with get_db_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE user_table SET last_login = %s WHERE user_id = %s",
+                        (current_time, user_id))
+                    conn.commit()
+                logger.info(f"✅ WebSocket 완전 종료: user_id={user_id}, last_login={current_time}")
+            except Exception as e:
+                logger.error(f"❌ last_login 업데이트 실패: user_id={user_id}, error={str(e)}", exc_info=True)
+        
         logger.info("WS disconnected user_id={}", user_id)
 
     async def send_to_user(self, user_id: int, data: dict):

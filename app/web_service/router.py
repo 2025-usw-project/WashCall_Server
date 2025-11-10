@@ -69,33 +69,54 @@ async def register(body: RegisterRequest):
 
 @router.post("/login", response_model=LoginResponse)
 async def login(body: LoginRequest):
+    import time
+    
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM user_table WHERE user_snum = %s", (body.user_snum,))
         user = cursor.fetchone()
+        
         if not user or not verify_password(body.user_password, user.get("user_password", "")):
             raise HTTPException(status_code=401, detail="invalid credentials")
-
+        
         role_str = role_to_str(user.get("user_role"))
         token = issue_jwt(int(user["user_id"]), role_str)
+        
+        # 🔥 last_login 시간 기록 (현재 시간)
+        current_time = int(time.time())
+        
         cursor.execute(
-            "UPDATE user_table SET user_token = %s, fcm_token = %s WHERE user_id = %s",
-            (token, body.fcm_token, user["user_id"]))
+            "UPDATE user_table SET user_token = %s, fcm_token = %s, last_login = %s WHERE user_id = %s",
+            (token, body.fcm_token, current_time, user["user_id"]))
         conn.commit()
-    return LoginResponse(access_token=token)
+        
+        logger.info(f"✅ 로그인: user_id={user['user_id']}, last_login={current_time}")
+        
+        return LoginResponse(access_token=token)
 
 @router.post("/logout")
 async def logout(body: LogoutRequest, authorization: str | None = Header(None)):
+    import time
+    
     token = _resolve_token(authorization, getattr(body, "access_token", None))
+    
     try:
         user = get_current_user(token)
     except Exception:
         raise HTTPException(status_code=401, detail="invalid token")
-
+    
+    # 🔥 로그아웃 시 last_login 시간 기록
+    current_time = int(time.time())
+    
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("UPDATE user_table SET user_token = NULL WHERE user_id = %s", (user["user_id"],))
+        cursor.execute(
+            "UPDATE user_table SET user_token = NULL, last_login = %s WHERE user_id = %s", 
+            (current_time, user["user_id"]))
         conn.commit()
+    
+    logger.info(f"✅ 로그아웃: user_id={user['user_id']}, last_login={current_time}")
+    
     return {"message": "logout ok"}
 
 
