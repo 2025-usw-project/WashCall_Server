@@ -1,5 +1,7 @@
-import time
+import asyncio
 import json
+import time
+from contextlib import suppress
 from typing import Dict, List
 
 from fastapi import WebSocket
@@ -71,8 +73,20 @@ class ConnectionManager:
                     pass
                 logger.warning("WS send failed and connection dropped user_id={}", user_id)
 
+    async def broadcast(self, data: dict):
+        """Send the same payload to every active WebSocket connection."""
+        for user_id in list(self.active.keys()):
+            await self.send_to_user(user_id, data)
+
+    def has_connections(self) -> bool:
+        return any(self.active.values())
+
 
 manager = ConnectionManager()
+
+
+TIMER_SYNC_INTERVAL_SECONDS = 1
+_timer_sync_task: asyncio.Task | None = None
 
 
 async def broadcast_room_status(machine_id: int, status: str):
@@ -297,3 +311,118 @@ async def broadcast_notify(machine_id: int, status: str):
                 
     except Exception as e:
         logger.error(f"❌ 알림 자동 해제 실패: machine_uuid={machine_uuid}, error={str(e)}", exc_info=True)
+
+
+async def _gather_machine_timers(now_ts: int) -> list[dict]:
+    """Fetch all machines with their remaining timers."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT machine_id,
+                   status,
+                   room_id,
+                   room_name,
+                   course_name,
+                   UNIX_TIMESTAMP(first_update) AS first_ts
+            FROM machine_table
+            """
+        )
+        machines = cursor.fetchall() or []
+
+        course_names = {row.get("course_name") for row in machines if row.get("course_name")}
+        course_avg_map: Dict[str, int] = {}
+        if course_names:
+            placeholders = ",".join(["%s"] * len(course_names))
+            cursor.execute(
+                f"SELECT course_name, avg_time FROM time_table WHERE course_name IN ({placeholders})",
+                tuple(course_names),
+            )
+            for course_row in cursor.fetchall() or []:
+                cname = course_row.get("course_name")
+                avg_time = course_row.get("avg_time")
+                if cname and avg_time is not None:
+                    try:
+                        course_avg_map[cname] = int(avg_time)
+                    except Exception:
+                        logger.warning(
+                            "timer_sync: avg_time parsing failed for course=%s value=%s",
+                            cname,
+                            avg_time,
+                        )
+
+    payloads: list[dict] = []
+    for row in machines:
+        status = (row.get("status") or "").upper()
+        course_name = row.get("course_name")
+        timer_val: int | None = None
+        if status in {"WASHING", "SPINNING"} and course_name:
+            avg_minutes = course_avg_map.get(course_name)
+            first_ts = row.get("first_ts")
+            timer_val, negative = compute_remaining_minutes(first_ts, avg_minutes, now_ts)
+            if negative:
+                timer_val = None
+
+        payloads.append(
+            {
+                "machine_id": int(row["machine_id"]),
+                "room_id": row.get("room_id"),
+                "room_name": row.get("room_name"),
+                "status": status,
+                "timer": timer_val,
+            }
+        )
+
+    return payloads
+
+
+async def broadcast_timer_snapshot():
+    if not manager.has_connections():
+        return
+
+    now_ts = int(time.time())
+    machines = await _gather_machine_timers(now_ts)
+    if not machines:
+        return
+
+    await manager.broadcast(
+        {
+            "type": "timer_sync",
+            "timestamp": now_ts,
+            "machines": machines,
+        }
+    )
+
+
+async def _timer_sync_loop():
+    logger.info("Timer sync loop started interval=%ss", TIMER_SYNC_INTERVAL_SECONDS)
+    try:
+        while True:
+            try:
+                await broadcast_timer_snapshot()
+            except Exception:
+                logger.exception("timer_sync_loop: iteration failed")
+            await asyncio.sleep(TIMER_SYNC_INTERVAL_SECONDS)
+    except asyncio.CancelledError:
+        logger.info("Timer sync loop cancelled")
+        raise
+
+
+async def start_timer_sync_loop():
+    global _timer_sync_task
+    if TIMER_SYNC_INTERVAL_SECONDS <= 0:
+        logger.warning("Timer sync loop disabled (interval <= 0)")
+        return
+    if _timer_sync_task and not _timer_sync_task.done():
+        return
+    _timer_sync_task = asyncio.create_task(_timer_sync_loop())
+
+
+async def stop_timer_sync_loop():
+    global _timer_sync_task
+    if not _timer_sync_task:
+        return
+    _timer_sync_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await _timer_sync_task
+    _timer_sync_task = None
