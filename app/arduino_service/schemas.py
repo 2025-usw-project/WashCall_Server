@@ -1,6 +1,6 @@
 from enum import Enum
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Optional, List
 
 class StatusEnum(str, Enum):
     WASHING = "WASHING"
@@ -30,3 +30,25 @@ class DeviceUpdateResponse(BaseModel):
     message: str = "received"
     NewWashThreshold: float = None  # 컬럼명 변경
     NewSpinThreshold: float = None  # 컬럼명 변경
+
+
+# /raw_data용 스키마
+class SensorData(BaseModel):
+    accel_x: List[float] = Field(..., min_length=30, max_length=30)
+    accel_y: List[float] = Field(..., min_length=30, max_length=30)
+    accel_z: List[float] = Field(..., min_length=30, max_length=30)
+    gyro_x: List[float] = Field(..., min_length=30, max_length=30)
+    gyro_y: List[float] = Field(..., min_length=30, max_length=30)
+    gyro_z: List[float] = Field(..., min_length=30, max_length=30)
+
+
+class RawDataRequest(BaseModel):
+    machine_id: int
+    secret_key: str
+    timestamp: int
+    sensor_data: SensorData
+    status: StatusEnum
+
+
+class RawDataResponse(BaseModel):
+    message: str = "receive ok"
