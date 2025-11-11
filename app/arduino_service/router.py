@@ -738,9 +738,9 @@ async def device_update(request: DeviceUpdateRequest):
 @router.post("/raw_data", response_model=RawDataResponse)
 async def receive_raw_data(request: RawDataRequest):
     """
-    아두이노에서 전송하는 원시 센서 데이터(30개씩) 수신 및 DB 저장
+    아두이노에서 전송하는 원시 센서 데이터(magnitude 기반) 수신 및 DB 저장
     """
-    logger.info(f"Raw data received: machine_id={request.machine_id}, status={request.status}, timestamp={request.timestamp}")
+    logger.info(f"Raw data received: machine_id={request.machine_id}, magnitude={request.magnitude}, timestamp={request.timestamp}")
     
     try:
         with get_db_connection() as conn:
@@ -757,27 +757,17 @@ async def receive_raw_data(request: RawDataRequest):
                 logger.warning(f"Unknown machine_id: {request.machine_id}")
                 raise HTTPException(status_code=404, detail="Machine not found")
             
-            # 2. sensor_data를 JSON으로 변환하여 DB에 저장
-            import json
-            sensor_json = json.dumps({
-                "accel_x": request.sensor_data.accel_x,
-                "accel_y": request.sensor_data.accel_y,
-                "accel_z": request.sensor_data.accel_z,
-                "gyro_x": request.sensor_data.gyro_x,
-                "gyro_y": request.sensor_data.gyro_y,
-                "gyro_z": request.sensor_data.gyro_z,
-            })
-            
-            # 3. raw_sensor_data 테이블에 INSERT
+            # 2. 센서 데이터를 개별 컬럼에 저장
             insert_query = """
                 INSERT INTO raw_sensor_data 
-                    (machine_id, timestamp, status, sensor_data, created_at)
+                    (machine_id, timestamp, magnitude, deltaX, deltaY, deltaZ, created_at)
                 VALUES 
-                    (%s, %s, %s, %s, NOW())
+                    (%s, %s, %s, %s, %s, %s, NOW())
             """
             cursor.execute(
                 insert_query,
-                (request.machine_id, request.timestamp, request.status.value, sensor_json)
+                (request.machine_id, request.timestamp, request.magnitude, 
+                 request.deltaX, request.deltaY, request.deltaZ)
             )
             conn.commit()
             
