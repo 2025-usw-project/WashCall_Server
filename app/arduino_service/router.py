@@ -746,9 +746,9 @@ async def receive_raw_data(request: RawDataRequest):
         with get_db_connection() as conn:
             cursor = conn.cursor(dictionary=True)
             
-            # 1. machine_id와 secret_key 검증
+            # 1. machine_id 검증
             cursor.execute(
-                "SELECT machine_id, machine_uuid FROM machine_table WHERE machine_id = %s",
+                "SELECT machine_id FROM machine_table WHERE machine_id = %s",
                 (request.machine_id,)
             )
             machine = cursor.fetchone()
@@ -756,11 +756,6 @@ async def receive_raw_data(request: RawDataRequest):
             if not machine:
                 logger.warning(f"Unknown machine_id: {request.machine_id}")
                 raise HTTPException(status_code=404, detail="Machine not found")
-            
-            # secret_key 검증 (machine_uuid와 비교)
-            if str(machine.get("machine_uuid")) != str(request.secret_key):
-                logger.warning(f"Invalid secret_key for machine_id={request.machine_id}")
-                raise HTTPException(status_code=403, detail="Invalid secret_key")
             
             # 2. sensor_data를 JSON으로 변환하여 DB에 저장
             import json

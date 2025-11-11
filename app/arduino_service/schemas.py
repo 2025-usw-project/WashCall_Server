@@ -44,7 +44,6 @@ class SensorData(BaseModel):
 
 class RawDataRequest(BaseModel):
     machine_id: int
-    secret_key: str
     timestamp: int
     sensor_data: SensorData
     status: StatusEnum
