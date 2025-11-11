@@ -90,7 +90,7 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
             body=body,
             icon='/images/favicon.png',  # 알림 아이콘
         ),
-        fcm_options=messaging.WebpushFcmOptions(
+        fcm_options=messaging.WebpushFCMOptions(
             link=click_url  # 알림 클릭 시 이동할 URL
         ),
         headers={
