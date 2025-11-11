@@ -22,33 +22,39 @@ class UpdateData(BaseModel):
     wash_max_magnitude: float = None
     spin_max_magnitude: float = None
     
-    class Config:
-        schema_extra = {
-            "example": {
-                "machine_id": 5,
-                "secret_key": "string",
-                "status": "WASHING",
-                "machine_type": "washer",
-                "timestamp": int(time.time()),  # 현재 타임스탬프
-                "battery": 0,
-                "wash_avg_magnitude": 0,
-                "wash_max_magnitude": 0,
-                "spin_max_magnitude": 0
-            }
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "machine_id": 5,
+                    "secret_key": "string",
+                    "status": "WASHING",
+                    "machine_type": "washer",
+                    "timestamp": int(time.time()),  # 현재 타임스탬프
+                    "battery": 0,
+                    "wash_avg_magnitude": 0,
+                    "wash_max_magnitude": 0,
+                    "spin_max_magnitude": 0
+                }
+            ]
         }
+    }
 
 # /device_update용 스키마
 class DeviceUpdateRequest(BaseModel):
     machine_id: int
     timestamp: int
     
-    class Config:
-        schema_extra = {
-            "example": {
-                "machine_id": 5,
-                "timestamp": int(time.time())  # 현재 타임스탬프
-            }
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "machine_id": 5,
+                    "timestamp": int(time.time())  # 현재 타임스탬프
+                }
+            ]
         }
+    }
 
 class DeviceUpdateResponse(BaseModel):
     message: str = "received"
@@ -66,18 +72,21 @@ class RawDataRequest(BaseModel):
     deltaZ: float
     secret_key: Optional[str] = None  # 호환성을 위해 받되 무시
     
-    class Config:
-        schema_extra = {
-            "example": {
-                "machine_id": 5,
-                "timestamp": int(time.time()),  # 현재 타임스탬프
-                "magnitude": 0.5,
-                "deltaX": 0.1,
-                "deltaY": 0.2,
-                "deltaZ": 0.3,
-                "secret_key": "string"
-            }
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "machine_id": 5,
+                    "timestamp": int(time.time()),  # 현재 타임스탬프
+                    "magnitude": 0.5,
+                    "deltaX": 0.1,
+                    "deltaY": 0.2,
+                    "deltaZ": 0.3,
+                    "secret_key": "string"
+                }
+            ]
         }
+    }
 
 
 class RawDataResponse(BaseModel):
