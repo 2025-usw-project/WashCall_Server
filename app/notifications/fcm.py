@@ -72,16 +72,31 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
 
     logger.info(f"🔥 FCM v1 API 사용 - 토큰 수: {len(tokens)}")
     
-    # ✅ 웹 푸시는 Data-only 메시지 권장 (Service Worker에서 처리)
-    # Notification 객체는 모바일에만 필요
-    # notif = messaging.Notification(title=title, body=body)
-    
     # Data payload를 문자열로 변환 (title, body 포함)
     data_str = {
         "title": str(title),
         "body": str(body),
         **{str(k): str(v) for k, v in (data or {}).items()}
     }
+    
+    # ✅ iOS PWA를 위한 WebpushConfig 설정
+    # machine_id가 있으면 딥링크로 이동, 없으면 메인 페이지
+    machine_id = data.get("machine_id", "") if data else ""
+    click_url = f"https://washcall.space/index.html#{machine_id}" if machine_id else "https://washcall.space/index.html"
+    
+    webpush_config = messaging.WebpushConfig(
+        notification=messaging.WebpushNotification(
+            title=title,
+            body=body,
+            icon='/images/favicon.png',  # 알림 아이콘
+        ),
+        fcm_options=messaging.WebpushFcmOptions(
+            link=click_url  # 알림 클릭 시 이동할 URL
+        ),
+        headers={
+            'TTL': '300'  # 5분 TTL (Time To Live)
+        }
+    )
     
     # 배치 전송 (FCM v1은 최대 500개 토큰/요청)
     attempted = 0
@@ -90,9 +105,10 @@ def send_to_tokens(tokens: List[str], title: str, body: str, data: Optional[Dict
     
     try:
         for batch in _chunked(tokens):
-            # ✅ Data-only 메시지 (웹 푸시용)
+            # ✅ iOS PWA 지원: Data + Webpush 설정
             msg = messaging.MulticastMessage(
                 data=data_str,
+                webpush=webpush_config,  # iOS PWA 지원
                 tokens=batch
             )  # type: ignore[call-arg]
             
