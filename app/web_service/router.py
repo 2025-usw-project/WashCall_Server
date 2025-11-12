@@ -551,7 +551,8 @@ async def get_tip(authorization: str | None = Header(None)):
             """,
             (now_ts - 1800,)
         )
-        recent_finished_count = cursor.fetchone().get("cnt", 0) if cursor.fetchone() else 0
+        row = cursor.fetchone()
+        recent_finished_count = row.get("cnt", 0) if row else 0
 
     # Build time context
     weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][now_dt.weekday()]
