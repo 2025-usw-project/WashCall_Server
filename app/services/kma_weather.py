@@ -138,26 +138,32 @@ def _parse_xml_forecast(xml_text: str) -> Optional[dict[str, str]]:
 
 
 def _store_to_cache(base_date: str, base_time: str, nx: int, ny: int, categories: dict[str, str], now_ts: int) -> None:
-    """Store parsed weather data to DB cache."""
+    """Store parsed weather data to DB cache (all fields)."""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO weather_cache
-                (base_date, base_time, nx, ny, fetched_at, temperature, precipitation_probability,
-                 precipitation_type, sky_condition, precipitation_amount, humidity, wind_speed, snow_amount)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (base_date, base_time, nx, ny, fetched_at, tmp, tmn, tmx, pop, pty, pcp, sno,
+                 sky, vec, wsd, uuu, vvv, reh, wav)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     fetched_at = VALUES(fetched_at),
-                    temperature = VALUES(temperature),
-                    precipitation_probability = VALUES(precipitation_probability),
-                    precipitation_type = VALUES(precipitation_type),
-                    sky_condition = VALUES(sky_condition),
-                    precipitation_amount = VALUES(precipitation_amount),
-                    humidity = VALUES(humidity),
-                    wind_speed = VALUES(wind_speed),
-                    snow_amount = VALUES(snow_amount)
+                    tmp = VALUES(tmp),
+                    tmn = VALUES(tmn),
+                    tmx = VALUES(tmx),
+                    pop = VALUES(pop),
+                    pty = VALUES(pty),
+                    pcp = VALUES(pcp),
+                    sno = VALUES(sno),
+                    sky = VALUES(sky),
+                    vec = VALUES(vec),
+                    wsd = VALUES(wsd),
+                    uuu = VALUES(uuu),
+                    vvv = VALUES(vvv),
+                    reh = VALUES(reh),
+                    wav = VALUES(wav)
                 """,
                 (
                     base_date,
@@ -166,13 +172,19 @@ def _store_to_cache(base_date: str, base_time: str, nx: int, ny: int, categories
                     ny,
                     now_ts,
                     _safe_float(categories.get("TMP")),
+                    _safe_float(categories.get("TMN")),
+                    _safe_float(categories.get("TMX")),
                     _safe_int(categories.get("POP")),
                     _safe_int(categories.get("PTY")),
-                    _safe_int(categories.get("SKY")),
                     categories.get("PCP"),
-                    _safe_int(categories.get("REH")),
-                    _safe_float(categories.get("WSD")),
                     categories.get("SNO"),
+                    _safe_int(categories.get("SKY")),
+                    _safe_int(categories.get("VEC")),
+                    _safe_float(categories.get("WSD")),
+                    _safe_float(categories.get("UUU")),
+                    _safe_float(categories.get("VVV")),
+                    _safe_int(categories.get("REH")),
+                    _safe_float(categories.get("WAV")),
                 ),
             )
             conn.commit()
@@ -181,18 +193,37 @@ def _store_to_cache(base_date: str, base_time: str, nx: int, ny: int, categories
         logger.error(f"Weather cache store failed: {exc}")
 
 
-def _format_weather_context(data: dict) -> dict[str, Optional[float | str]]:
-    """Convert DB row to WeatherContext-compatible dict."""
-    pty_val = data.get("precipitation_type")
+def _format_weather_context(data: dict) -> dict:
+    """Convert DB row to extended weather dict with all fields."""
+    pty_val = data.get("pty")
+    sky_val = data.get("sky")
     
     return {
         "base_time": f"{data.get('base_date')}T{data.get('base_time')}00+0900",
         "forecast_time": datetime.now(tz=KST).isoformat(),
-        "precipitation_probability": float(data.get("precipitation_probability")) if data.get("precipitation_probability") is not None else None,
+        # 기온
+        "temperature": float(data.get("tmp")) if data.get("tmp") is not None else None,
+        "min_temperature": float(data.get("tmn")) if data.get("tmn") is not None else None,
+        "max_temperature": float(data.get("tmx")) if data.get("tmx") is not None else None,
+        # 강수
+        "precipitation_probability": int(data.get("pop")) if data.get("pop") is not None else None,
         "precipitation_type": PTY_MAP.get(pty_val) if pty_val is not None else None,
-        "rainfall_last_hour": None,  # Not directly available in forecast
-        "temperature": float(data.get("temperature")) if data.get("temperature") is not None else None,
-        "humidity": float(data.get("humidity")) if data.get("humidity") is not None else None,
+        "precipitation_type_code": pty_val,
+        "precipitation_amount": data.get("pcp"),
+        "snow_amount": data.get("sno"),
+        # 하늘
+        "sky_condition": SKY_MAP.get(sky_val) if sky_val is not None else None,
+        "sky_condition_code": sky_val,
+        # 바람
+        "wind_direction": int(data.get("vec")) if data.get("vec") is not None else None,
+        "wind_speed": float(data.get("wsd")) if data.get("wsd") is not None else None,
+        "wind_ew": float(data.get("uuu")) if data.get("uuu") is not None else None,
+        "wind_ns": float(data.get("vvv")) if data.get("vvv") is not None else None,
+        # 기타
+        "humidity": int(data.get("reh")) if data.get("reh") is not None else None,
+        "wave_height": float(data.get("wav")) if data.get("wav") is not None else None,
+        # Legacy fields for backward compatibility
+        "rainfall_last_hour": None,
     }
 
 
@@ -248,12 +279,22 @@ def fetch_kma_weather(now: Optional[datetime] = None) -> Optional[dict[str, Opti
     # 4. Store to cache
     _store_to_cache(base_date, base_time, nx, ny, categories, now_ts)
     
-    # 5. Format and return
+    # 5. Format and return (all fields)
     return _format_weather_context({
         "base_date": base_date,
         "base_time": base_time,
-        "precipitation_probability": _safe_int(categories.get("POP")),
-        "precipitation_type": _safe_int(categories.get("PTY")),
-        "temperature": _safe_float(categories.get("TMP")),
-        "humidity": _safe_int(categories.get("REH")),
+        "tmp": _safe_float(categories.get("TMP")),
+        "tmn": _safe_float(categories.get("TMN")),
+        "tmx": _safe_float(categories.get("TMX")),
+        "pop": _safe_int(categories.get("POP")),
+        "pty": _safe_int(categories.get("PTY")),
+        "pcp": categories.get("PCP"),
+        "sno": categories.get("SNO"),
+        "sky": _safe_int(categories.get("SKY")),
+        "vec": _safe_int(categories.get("VEC")),
+        "wsd": _safe_float(categories.get("WSD")),
+        "uuu": _safe_float(categories.get("UUU")),
+        "vvv": _safe_float(categories.get("VVV")),
+        "reh": _safe_int(categories.get("REH")),
+        "wav": _safe_float(categories.get("WAV")),
     })

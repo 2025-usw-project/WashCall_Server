@@ -32,21 +32,60 @@ def _build_prompt(status_context: dict) -> str:
         if time_ctx.get("is_holiday"):
             prompt_parts.append("- 오늘은 공휴일입니다")
 
-    # Weather context
+    # Weather context (전체 정보)
     weather = status_context.get("weather")
     if weather:
+        weather_lines = ["- 날씨 상세:"]
+        
+        # 기온
         temp = weather.get("temperature")
-        pty = weather.get("precipitation_type")
-        pop = weather.get("precipitation_probability")
-        weather_info = []
         if temp is not None:
-            weather_info.append(f"기온 {temp}°C")
+            weather_lines.append(f"  * 현재 기온: {temp}°C")
+        min_temp = weather.get("min_temperature")
+        max_temp = weather.get("max_temperature")
+        if min_temp is not None or max_temp is not None:
+            temp_range = []
+            if min_temp is not None:
+                temp_range.append(f"최저 {min_temp}°C")
+            if max_temp is not None:
+                temp_range.append(f"최고 {max_temp}°C")
+            weather_lines.append(f"  * 예상 기온: {', '.join(temp_range)}")
+        
+        # 강수
+        pop = weather.get("precipitation_probability")
+        if pop is not None:
+            weather_lines.append(f"  * 강수확률: {pop}%")
+        pty = weather.get("precipitation_type")
         if pty and pty != "없음":
-            weather_info.append(f"{pty}")
-        elif pop is not None and pop > 50:
-            weather_info.append(f"강수확률 {pop}%")
-        if weather_info:
-            prompt_parts.append(f"- 날씨: {', '.join(weather_info)}")
+            weather_lines.append(f"  * 강수형태: {pty}")
+        pcp = weather.get("precipitation_amount")
+        if pcp and pcp != "강수없음":
+            weather_lines.append(f"  * 강수량: {pcp}")
+        sno = weather.get("snow_amount")
+        if sno and sno != "적설없음":
+            weather_lines.append(f"  * 적설량: {sno}")
+        
+        # 하늘 상태
+        sky = weather.get("sky_condition")
+        if sky:
+            weather_lines.append(f"  * 하늘: {sky}")
+        
+        # 바람
+        wind_speed = weather.get("wind_speed")
+        wind_dir = weather.get("wind_direction")
+        if wind_speed is not None:
+            wind_info = f"풍속 {wind_speed}m/s"
+            if wind_dir is not None:
+                wind_info += f", 풍향 {wind_dir}°"
+            weather_lines.append(f"  * 바람: {wind_info}")
+        
+        # 습도
+        humidity = weather.get("humidity")
+        if humidity is not None:
+            weather_lines.append(f"  * 습도: {humidity}%")
+        
+        if len(weather_lines) > 1:
+            prompt_parts.extend(weather_lines)
 
     # Room summaries
     rooms = status_context.get("rooms", [])
@@ -82,6 +121,18 @@ def _build_prompt(status_context: dict) -> str:
     if recent_finished > 0:
         prompt_parts.append(f"- 최근 완료: {recent_finished}건")
 
+    # Congestion statistics (요일별/시간별 혼잡도)
+    congestion = status_context.get("congestion_stats")
+    if congestion:
+        prompt_parts.append("- 혼잡도 통계 (요일별/시간별 평균 사용 대수):")
+        for day, hours in congestion.items():
+            if isinstance(hours, list) and len(hours) == 24:
+                # 현재 시간대 근처의 혼잡도만 표시
+                time_ctx = status_context.get("time", {})
+                current_hour = time_ctx.get("hour", 0)
+                current_usage = hours[current_hour] if 0 <= current_hour < 24 else 0
+                prompt_parts.append(f"  * {day}: 현재 시간대({current_hour}시) 평균 {current_usage}대 사용")
+
     prompt_parts.append("")
     prompt_parts.append("위 정보를 바탕으로 현재 세탁실 상황을 한 줄로 요약해주세요. 이모지를 적절히 사용하면 좋습니다.")
 
@@ -112,17 +163,17 @@ def _call_google_gemini(prompt: str, model: str, api_key: str) -> Optional[str]:
         if "2.5" in model.lower() and "flash" in model.lower():
             config.thinking_config = types.ThinkingConfig(thinking_budget=0)
         
+        logger.debug(f"[Gemini] Sending prompt to {model}")
+        
         response = client.models.generate_content(
             model=model,
             contents=prompt,
             config=config,
         )
         
-        if response and response.text:
-            return response.text.strip()
-        
-        logger.warning("Gemini response missing text")
-        return None
+        result = response.text.strip()
+        logger.debug(f"[Gemini] Response received: {result}")
+        return result
     except Exception as exc:
         logger.error(f"Google Gemini API call failed: {exc}")
         return None

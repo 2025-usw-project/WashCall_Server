@@ -633,10 +633,35 @@ async def get_tip(authorization: str | None = Header(None)):
         alerts=alerts,
     )
 
+    # Fetch congestion statistics
+    congestion_stats = {}
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT busy_day, busy_time, busy_count FROM busy_table")
+            rows = cursor.fetchall() or []
+            
+            days = ["월", "화", "수", "목", "금", "토", "일"]
+            congestion_stats = {d: [0] * 24 for d in days}
+            
+            for row in rows:
+                day = str(row.get("busy_day") or "")
+                hour = row.get("busy_time")
+                count = row.get("busy_count")
+                try:
+                    hour_int = int(hour)
+                except Exception:
+                    continue
+                if day in congestion_stats and 0 <= hour_int <= 23:
+                    congestion_stats[day][hour_int] = int(count or 0)
+    except Exception as exc:
+        logger.warning(f"Congestion stats fetch failed: {exc}")
+
     # Generate AI tip
     tip_message = None
     try:
         status_dict = status_context.model_dump()
+        status_dict["congestion_stats"] = congestion_stats  # Add congestion data
         tip_message = await run_in_threadpool(generate_summary, status_dict)
     except Exception as exc:
         logger.warning(f"AI tip generation failed: {exc}")
