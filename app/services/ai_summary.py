@@ -20,11 +20,17 @@ def _build_prompt(status_context: dict) -> str:
     ]
 
     # Time context
-    time_ctx = status_context.get("time_context", {})
+    time_ctx = status_context.get("time", {})
     if time_ctx:
-        prompt_parts.append(f"- 현재 시간: {time_ctx.get('weekday_kr')} {time_ctx.get('hour_12h')}시 ({time_ctx.get('period_kr')})")
+        weekday = time_ctx.get("weekday", "")
+        hour = time_ctx.get("hour", 0)
+        period = "오전" if hour < 12 else "오후"
+        hour_12 = hour if hour <= 12 else hour - 12
+        if hour_12 == 0:
+            hour_12 = 12
+        prompt_parts.append(f"- 현재 시간: {weekday}요일 {period} {hour_12}시")
         if time_ctx.get("is_holiday"):
-            prompt_parts.append(f"- 공휴일: {time_ctx.get('holiday_name')}")
+            prompt_parts.append("- 오늘은 공휴일입니다")
 
     # Weather context
     weather = status_context.get("weather")

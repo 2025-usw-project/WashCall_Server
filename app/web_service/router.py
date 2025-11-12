@@ -555,18 +555,17 @@ async def get_tip(authorization: str | None = Header(None)):
         recent_finished_count = row.get("cnt", 0) if row else 0
 
     # Build time context
-    weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][now_dt.weekday()]
-    hour_24 = now_dt.hour
+    weekday_labels = ["월", "화", "수", "목", "금", "토", "일"]
+    weekday_label = weekday_labels[now_dt.weekday()]
     is_holiday = now_dt.date() in kr_holidays
-    holiday_name = kr_holidays.get(now_dt.date()) if is_holiday else None
+    is_weekend = now_dt.weekday() >= 5
     
     time_context = TimeContext(
-        weekday_kr=weekday_kr,
-        hour_24h=hour_24,
-        hour_12h=hour_24 if hour_24 <= 12 else hour_24 - 12,
-        period_kr="오전" if hour_24 < 12 else "오후",
+        iso_timestamp=now_dt.isoformat(),
+        weekday=weekday_label,
+        hour=now_dt.hour,
         is_holiday=is_holiday,
-        holiday_name=holiday_name,
+        is_weekend=is_weekend,
     )
 
     # Fetch weather
