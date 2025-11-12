@@ -423,17 +423,18 @@ async def update(data: UpdateData):
                     
             # ===== 3-1단계: WASHING → SPINNING 전환 감지 (새로 추가!) =====
             if current_status == "WASHING" and data.status == "SPINNING":
-                logger.info("WASHING → SPINNING 전환 감지! spinning_update 기록")
+                logger.info("WASHING → SPINNING 전환 감지! spinning_update 기록 + spin_count 증가")
                 
                 try:
-                    # spinning_update 기록
+                    # spinning_update 기록 + spin_count 증가
                     spinning_update_query = """
                         UPDATE machine_table
-                        SET spinning_update = %s
+                        SET spinning_update = %s,
+                            spin_count = spin_count + 1
                         WHERE machine_id = %s
                     """
                     cursor.execute(spinning_update_query, (data.timestamp, data.machine_id))
-                    logger.info(f"spinning_update 기록 완료: {data.timestamp}")
+                    logger.info(f"spinning_update 기록 완료: {data.timestamp}, spin_count 증가")
                     
                 except Exception as e:
                     logger.error(f"spinning_update 기록 실패: {str(e)}", exc_info=True)
@@ -476,21 +477,21 @@ async def update(data: UpdateData):
                     logger.info(f"상태 업데이트 시작: {actual_status} (machine_type={data.machine_type})")
                     
                     if actual_status == "FINISHED":
-                        logger.info("FINISHED 상태: last_update 갱신 + course_name 초기화")
+                        logger.info("FINISHED 상태: last_update 갱신 + course_name 초기화 + spin_count 0으로 리셋")
                         current_time_int = int(datetime.now(KST).timestamp())
                         logger.info(f"현재 시간 (timestamp): {current_time_int}")
                         
                         if data.battery is not None:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, machine_type=%s, battery=%s, timestamp=%s, last_update=%s, course_name=NULL
+                            SET status=%s, machine_type=%s, battery=%s, timestamp=%s, last_update=%s, course_name=NULL, spin_count=0
                             WHERE machine_id=%s
                             """
                             cursor.execute(query, (actual_status, data.machine_type.lower(), data.battery, data.timestamp, current_time_int, data.machine_id))
                         else:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, machine_type=%s, timestamp=%s, last_update=%s, course_name=NULL
+                            SET status=%s, machine_type=%s, timestamp=%s, last_update=%s, course_name=NULL, spin_count=0
                             WHERE machine_id=%s
                             """
                             cursor.execute(query, (actual_status, data.machine_type.lower(), data.timestamp, current_time_int, data.machine_id))
