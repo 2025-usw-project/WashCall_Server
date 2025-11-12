@@ -96,6 +96,7 @@ class MachineItem(BaseModel):
     room_name: str
     machine_name: str
     status: str
+    machine_type: str  # "washer" or "dryer"
     isusing: int  # 0: 알림 미등록, 1: 알림 등록됨
     timer: int | None = None  # 남은 시간(분)
 

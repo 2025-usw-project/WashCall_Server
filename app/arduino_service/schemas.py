@@ -6,6 +6,7 @@ import time
 class StatusEnum(str, Enum):
     WASHING = "WASHING"
     SPINNING = "SPINNING"
+    DRYING = "DRYING"
     FINISHED = "FINISHED"
     EXT_VIBE = "EXT_VIBE"
     OFF = "OFF"

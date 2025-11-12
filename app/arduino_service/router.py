@@ -361,7 +361,13 @@ async def update(data: UpdateData):
     """
     try:
         # ===== 1단계: 입력값 검증 =====
-        logger.info(f"UPDATE 요청 수신: machine_id={data.machine_id}, status={data.status}")
+        logger.info(f"UPDATE 요청 수신: machine_id={data.machine_id}, status={data.status}, machine_type={data.machine_type}")
+        
+        # 건조기(dryer)일 때 WASHING/SPINNING을 DRYING으로 변환
+        actual_status = data.status
+        if data.machine_type.lower() == "dryer" and data.status in ("WASHING", "SPINNING"):
+            actual_status = "DRYING"
+            logger.info(f"건조기 감지: {data.status} → DRYING 변환")
         
         if data.timestamp is None:
             logger.error("timestamp가 None입니다")
@@ -400,9 +406,9 @@ async def update(data: UpdateData):
                 logger.error(f"DB 조회 중 오류: {str(e)}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"DB 조회 실패: {str(e)}")
             
-            # ===== 3단계: FINISHED → WASHING 전환 감지 =====
-            if current_status == "FINISHED" and data.status == "WASHING":
-                logger.info("FINISHED → WASHING 전환 감지! first_update 기록")
+            # ===== 3단계: FINISHED → WASHING/DRYING 전환 감지 =====
+            if current_status == "FINISHED" and actual_status in ("WASHING", "DRYING"):
+                logger.info(f"FINISHED → {actual_status} 전환 감지! first_update 기록")
                 
                 try:
                     first_update_query = """
@@ -457,7 +463,7 @@ async def update(data: UpdateData):
                             washing_time_minutes = washing_time_seconds // 60
                             logger.info(f"세탁 시간 계산: {data.timestamp} - {first_timestamp} = {washing_time_seconds}초 = {washing_time_minutes}분")
                             update_segment_avg_time(cursor, course_name, washing_time_minutes, "avg_washing_time")
-                            logger.info(f"세탁 시간 업데이트 완료")
+                            logger.info("세탁 시간 업데이트 완료")
                         else:
                             logger.warning(f"세탁 시간 계산 실패: washing_time={washing_time_seconds}초, course_name={course_name}")
                 
@@ -466,10 +472,10 @@ async def update(data: UpdateData):
                         
             # ===== 4단계: machine_table 상태 업데이트 =====
             try:
-                if data.status in ("WASHING", "SPINNING", "FINISHED"):
-                    logger.info(f"상태 업데이트 시작: {data.status}")
+                if actual_status in ("WASHING", "SPINNING", "DRYING", "FINISHED"):
+                    logger.info(f"상태 업데이트 시작: {actual_status} (machine_type={data.machine_type})")
                     
-                    if data.status == "FINISHED":
+                    if actual_status == "FINISHED":
                         logger.info("FINISHED 상태: last_update 갱신 + course_name 초기화")
                         current_time_int = int(datetime.now(KST).timestamp())
                         logger.info(f"현재 시간 (timestamp): {current_time_int}")
@@ -477,32 +483,32 @@ async def update(data: UpdateData):
                         if data.battery is not None:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, battery=%s, timestamp=%s, last_update=%s, course_name=NULL
+                            SET status=%s, machine_type=%s, battery=%s, timestamp=%s, last_update=%s, course_name=NULL
                             WHERE machine_id=%s
                             """
-                            cursor.execute(query, (data.status, data.battery, data.timestamp, current_time_int, data.machine_id))
+                            cursor.execute(query, (actual_status, data.machine_type.lower(), data.battery, data.timestamp, current_time_int, data.machine_id))
                         else:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, timestamp=%s, last_update=%s, course_name=NULL
+                            SET status=%s, machine_type=%s, timestamp=%s, last_update=%s, course_name=NULL
                             WHERE machine_id=%s
                             """
-                            cursor.execute(query, (data.status, data.timestamp, current_time_int, data.machine_id))
+                            cursor.execute(query, (actual_status, data.machine_type.lower(), data.timestamp, current_time_int, data.machine_id))
                     else:
                         if data.battery is not None:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, battery=%s, timestamp=%s
+                            SET status=%s, machine_type=%s, battery=%s, timestamp=%s
                             WHERE machine_id=%s
                             """
-                            cursor.execute(query, (data.status, data.battery, data.timestamp, data.machine_id))
+                            cursor.execute(query, (actual_status, data.machine_type.lower(), data.battery, data.timestamp, data.machine_id))
                         else:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, timestamp=%s
+                            SET status=%s, machine_type=%s, timestamp=%s
                             WHERE machine_id=%s
                             """
-                            cursor.execute(query, (data.status, data.timestamp, data.machine_id))
+                            cursor.execute(query, (actual_status, data.machine_type.lower(), data.timestamp, data.machine_id))
                     
                     rows_affected = cursor.rowcount
                     logger.info(f"상태 UPDATE 완료: {rows_affected}행 영향")
@@ -557,11 +563,11 @@ async def update(data: UpdateData):
                             spinning_time_minutes = spinning_time_seconds // 60
                             logger.info(f"탈수 시간 계산: {last_timestamp} - {spinning_update} = {spinning_time_seconds}초 = {spinning_time_minutes}분")
                             update_segment_avg_time(cursor, course_name, spinning_time_minutes, "avg_spinning_time")
-                            logger.info(f"탈수 시간 기록 완료")
+                            logger.info("탈수 시간 기록 완료")
                         else:
-                            logger.warning(f"탈수 시간 계산 실패: spinning_time={spinning_time_seconds}초")
+                            logger.warning("탈수 시간 계산 실패")
                     else:
-                        logger.warning(f"탈수 시간 계산 필수 데이터 누락 (스킵)")
+                        logger.warning("탈수 시간 계산 필수 데이터 누락 (스킵)")
                         logger.warning(f"   spinning_update={spinning_update}, last_timestamp={last_timestamp}, course_name={course_name}")
                     
                     # 강화된 유효성 검사
@@ -590,12 +596,12 @@ async def update(data: UpdateData):
                                 elapsed_time = None
                             
                             else:
-                                logger.info(f"유효한 시간: {elapsed_time}초 ({elapsed_time // 60}분 {elapsed_time % 60}초)")
+                                logger.info("유효한 시간: {}초 ({elapsed_time // 60}분 {elapsed_time % 60}초)")
                             
                             # 유효한 시간만 기록 (함수 내에서도 체크!)
                             if elapsed_time is not None and elapsed_time > 0:
                                 update_course_avg_time(cursor, course_name, elapsed_time)
-                                logger.info(f"{course_name} 평균 시간 업데이트 완료")
+                                logger.info("코스 시간 기록 완료")
                             else:
                                 logger.warning(f"코스 시간 기록 스킵: elapsed_time={elapsed_time}")
                         
@@ -660,10 +666,10 @@ async def update(data: UpdateData):
             
             # ===== 7단계: WebSocket 브로드캐스트 =====
             try:
-                if data.status in ("WASHING", "SPINNING", "FINISHED"):
-                    await broadcast_room_status(data.machine_id, data.status)
-                    await broadcast_notify(data.machine_id, data.status)
-                    logger.info("WebSocket 브로드캐스트 완료")
+                if actual_status in ("WASHING", "SPINNING", "DRYING", "FINISHED"):
+                    await broadcast_room_status(data.machine_id, actual_status)
+                    await broadcast_notify(data.machine_id, actual_status)
+                    logger.info(f"WebSocket 브로드캐스트 완료: {actual_status}")
             except Exception as e:
                 logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}", exc_info=True)
             

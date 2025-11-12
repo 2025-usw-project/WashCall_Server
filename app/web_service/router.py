@@ -202,6 +202,7 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                        COALESCE(rt.room_name, m.room_name) AS room_name,
                        m.machine_name,
                        m.status,
+                       m.machine_type,
                        m.course_name,
                        UNIX_TIMESTAMP(m.first_update) AS first_ts
                 FROM machine_table m
@@ -220,6 +221,7 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                        COALESCE(rt.room_name, m.room_name) AS room_name,
                        m.machine_name,
                        m.status,
+                       m.machine_type,
                        m.course_name,
                        UNIX_TIMESTAMP(m.first_update) AS first_ts
                 FROM machine_table m
@@ -305,8 +307,8 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 SELECT COUNT(*) AS cnt
                 FROM machine_table
                 WHERE room_id IN ({placeholders_rooms})
-                  AND status = %s
-                  AND timestamp >= %s
+                    AND status = %s
+                    AND timestamp >= %s
                 """,
                 params,
             )
@@ -321,7 +323,7 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         "timers": [],
     })
 
-    busy_statuses = {"WASHING", "SPINNING"}
+    busy_statuses = {"WASHING", "SPINNING", "DRYING"}
 
     for r in rows:
         status = (r.get("status") or "").upper()
@@ -347,6 +349,7 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 room_name=r.get("room_name") or "",
                 machine_name=r.get("machine_name") or "",
                 status=r.get("status") or "",
+                machine_type=r.get("machine_type") or "washer",
                 isusing=1 if r.get("machine_uuid") in notify_set else 0,
                 timer=timer_val,
             )

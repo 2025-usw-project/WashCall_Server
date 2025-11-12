@@ -99,7 +99,7 @@ async def broadcast_room_status(machine_id: int, status: str):
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT room_id, room_name, machine_name, course_name, UNIX_TIMESTAMP(first_update) AS first_ts FROM machine_table WHERE machine_id = %s",
+            "SELECT room_id, room_name, machine_name, machine_type, course_name, UNIX_TIMESTAMP(first_update) AS first_ts FROM machine_table WHERE machine_id = %s",
             (machine_id,)
         )
         m = cursor.fetchone()
@@ -110,6 +110,7 @@ async def broadcast_room_status(machine_id: int, status: str):
         room_id = m["room_id"]
         room_name = m.get("room_name", "세탁실")
         machine_name = m.get("machine_name", "세탁기")
+        machine_type = m.get("machine_type", "washer")
         course_name = m.get("course_name")
         first_ts = m.get("first_ts")
         avg_minutes = None
@@ -142,6 +143,7 @@ async def broadcast_room_status(machine_id: int, status: str):
             "type": "room_status",
             "machine_id": machine_id,
             "status": status,
+            "machine_type": machine_type,
             "room_id": room_id,
             "room_name": room_name,
             "machine_name": machine_name,
@@ -204,7 +206,7 @@ async def broadcast_notify(machine_id: int, status: str):
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT machine_uuid, machine_name, room_id, course_name, UNIX_TIMESTAMP(first_update) AS first_ts FROM machine_table WHERE machine_id = %s",
+            "SELECT machine_uuid, machine_name, machine_type, room_id, course_name, UNIX_TIMESTAMP(first_update) AS first_ts FROM machine_table WHERE machine_id = %s",
             (machine_id,)
         )
         mu = cursor.fetchone()
@@ -214,6 +216,7 @@ async def broadcast_notify(machine_id: int, status: str):
         
         machine_uuid = mu.get("machine_uuid")
         machine_name = mu.get("machine_name", "세탁기")
+        machine_type = mu.get("machine_type", "washer")
         course_name = mu.get("course_name")
         first_ts = mu.get("first_ts")
         avg_minutes = None
@@ -246,6 +249,7 @@ async def broadcast_notify(machine_id: int, status: str):
             "type": "notify",
             "machine_id": machine_id,
             "status": status,
+            "machine_type": machine_type,
             "timer": timer_minutes,
         })
     
@@ -321,6 +325,7 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
             """
             SELECT machine_id,
                    status,
+                   machine_type,
                    room_id,
                    room_name,
                    course_name,
@@ -354,9 +359,10 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
     payloads: list[dict] = []
     for row in machines:
         status = (row.get("status") or "").upper()
+        machine_type = row.get("machine_type") or "washer"
         course_name = row.get("course_name")
         timer_val: int | None = None
-        if status in {"WASHING", "SPINNING"} and course_name:
+        if status in {"WASHING", "SPINNING", "DRYING"} and course_name:
             avg_minutes = course_avg_map.get(course_name)
             first_ts = row.get("first_ts")
             timer_val, negative = compute_remaining_minutes(first_ts, avg_minutes, now_ts)
@@ -369,6 +375,7 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
                 "room_id": row.get("room_id"),
                 "room_name": row.get("room_name"),
                 "status": status,
+                "machine_type": machine_type,
                 "timer": timer_val,
             }
         )
