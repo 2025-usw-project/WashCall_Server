@@ -470,21 +470,21 @@ async def update(data: UpdateData):
                     logger.info(f"상태 업데이트 시작: {data.status}")
                     
                     if data.status == "FINISHED":
-                        logger.info("FINISHED 상태: last_update 갱신")
+                        logger.info("FINISHED 상태: last_update 갱신 + course_name 초기화")
                         current_time_int = int(datetime.now(KST).timestamp())
                         logger.info(f"현재 시간 (timestamp): {current_time_int}")
                         
                         if data.battery is not None:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, battery=%s, timestamp=%s, last_update=%s
+                            SET status=%s, battery=%s, timestamp=%s, last_update=%s, course_name=NULL
                             WHERE machine_id=%s
                             """
                             cursor.execute(query, (data.status, data.battery, data.timestamp, current_time_int, data.machine_id))
                         else:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, timestamp=%s, last_update=%s
+                            SET status=%s, timestamp=%s, last_update=%s, course_name=NULL
                             WHERE machine_id=%s
                             """
                             cursor.execute(query, (data.status, data.timestamp, current_time_int, data.machine_id))

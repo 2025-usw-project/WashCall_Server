@@ -588,7 +588,7 @@ async def set_fcm_token(body: SetFcmTokenRequest, authorization: str | None = He
 
 @router.post("/start_course", response_model=StartCourseResponse)
 async def start_course(body: StartCourseRequest, authorization: str | None = Header(None)):
-    """세탁 코스 시작 - 상태도 WASHING으로 변경!"""
+    """세탁 코스 시작 - course_name과 first_update만 설정 (상태는 /update로만 변경)"""
 
     token = _resolve_token(authorization, None)
     try:
@@ -642,14 +642,12 @@ async def start_course(body: StartCourseRequest, authorization: str | None = Hea
         if negative_time:
             timer_minutes = None
 
-        # 3. machine_table 상태 업데이트 (first_update 갱신, 필요 시 라벨링)
+        # 3. machine_table 업데이트 (course_name과 first_update만 설정, 상태는 변경하지 않음)
         set_clauses = [
-            "status = %s",
             "timestamp = %s",
             "first_update = FROM_UNIXTIME(%s)",
         ]
         params: list = [
-            "WASHING",
             now_ts,
             now_ts,
         ]
@@ -666,10 +664,11 @@ async def start_course(body: StartCourseRequest, authorization: str | None = Hea
 
         conn.commit()
 
-        # ✅ 4. WebSocket 브로드캐스트! (중요!)
+        # ✅ 4. WebSocket 브로드캐스트 (현재 상태로)
+        current_status = machine.get("status", "IDLE")
         try:
-            await broadcast_room_status(body.machine_id, "WASHING")
-            await broadcast_notify(body.machine_id, "WASHING")
+            await broadcast_room_status(body.machine_id, current_status)
+            await broadcast_notify(body.machine_id, current_status)
         except Exception as e:
             logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}")
 
