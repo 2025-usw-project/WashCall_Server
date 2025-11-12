@@ -472,10 +472,10 @@ async def update(data: UpdateData):
                     logger.error(f"세탁 시간 계산 실패: {str(e)}", exc_info=True)
                     
                 # ===== 3-2단계: SPINNING → FINISHED 전환 감지 ===== ← 새로 추가!
-                if current_status == "SPINNING" and data.status == "FINISHED":
-                    logger.info("✅ 상태 전환 감지: SPINNING → FINISHED")
-                    logger.info(f"📍 DB 확인: machine_id {data.machine_id}가 SPINNING에서 FINISHED로 변경")
-                    logger.info(f"⏳ 탈수 완료 감지! 아래 5단계의 기존 처리 로직이 자동으로 실행됨...")
+            if current_status == "SPINNING" and data.status == "FINISHED":
+                logger.info("✅ 상태 전환 감지: SPINNING → FINISHED")
+                logger.info(f"📍 DB 확인: machine_id {data.machine_id}가 SPINNING에서 FINISHED로 변경")
+                logger.info(f"⏳ 탈수 완료 감지! 아래 5단계의 기존 처리 로직이 자동으로 실행됨...")
                         
             # ===== 4단계: machine_table 상태 업데이트 =====
             try:
