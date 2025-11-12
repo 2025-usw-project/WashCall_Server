@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import os
+import random
+import time
 from typing import Optional
 
 import requests
 from google import genai
 from google.genai import types
 from loguru import logger
+
+from app.database import get_db_connection
+
+CACHE_DURATION_SECONDS = 600  # 10분
 
 
 def _build_prompt(status_context: dict) -> str:
@@ -121,26 +127,37 @@ def _build_prompt(status_context: dict) -> str:
     if recent_finished > 0:
         prompt_parts.append(f"- 최근 완료: {recent_finished}건")
 
-    # Congestion statistics (요일별/시간별 혼잡도)
+    # Congestion statistics (요일별/시간별 혼잡도 - 전체 시간대)
     congestion = status_context.get("congestion_stats")
     if congestion:
-        prompt_parts.append("- 혼잡도 통계 (요일별/시간별 평균 사용 대수):")
+        prompt_parts.append("- 혼잡도 통계 (요일별/시간별 평균 사용 대수, 전체 시간대):")
         for day, hours in congestion.items():
             if isinstance(hours, list) and len(hours) == 24:
-                # 현재 시간대 근처의 혼잡도만 표시
-                time_ctx = status_context.get("time", {})
-                current_hour = time_ctx.get("hour", 0)
-                current_usage = hours[current_hour] if 0 <= current_hour < 24 else 0
-                prompt_parts.append(f"  * {day}: 현재 시간대({current_hour}시) 평균 {current_usage}대 사용")
+                hour_str = ", ".join([f"{i}시:{hours[i]}대" for i in range(24)])
+                prompt_parts.append(f"  * {day}: {hour_str}")
 
     prompt_parts.append("")
-    prompt_parts.append("위 정보를 바탕으로 현재 세탁실 상황을 한 줄로 요약해주세요. 이모지를 적절히 사용하면 좋습니다.")
+    prompt_parts.append(
+        "위 정보를 바탕으로 현재 세탁실 상황을 한 줄로 요약해주세요. "
+        "혼잡도 통계를 참고하여 '이 시간대는 세탁하기 쾌적할 것 같아요 (이용하는 사람들이 많이 없을 것 같아요!)' 또는 "
+        "'이 시간대는 사람이 많을 것 같아요!' 같은 친근한 말투로 조언해주세요. 이모지를 적절히 사용하면 좋습니다."
+    )
 
     return "\n".join(prompt_parts)
 
 
-def _call_google_gemini(prompt: str, model: str, api_key: str) -> Optional[str]:
-    """Call Google Gemini API for text generation with thinking disabled."""
+def _call_google_gemini(prompt: str, model: str, api_key: str, count: int = 5) -> list[str]:
+    """Call Google Gemini API for multiple text generation responses.
+    
+    Args:
+        prompt: Input prompt
+        model: Model name
+        api_key: API key
+        count: Number of responses to generate (default: 5)
+    
+    Returns:
+        List of generated responses
+    """
     try:
         client = genai.Client(api_key=api_key)
         
@@ -148,14 +165,13 @@ def _call_google_gemini(prompt: str, model: str, api_key: str) -> Optional[str]:
         system_instruction = (
             "당신은 대학 기숙사 세탁실 현황을 간결하게 요약하는 AI입니다. "
             "반드시 한 줄로만 요약하며, 자연스럽고 친근한 말투를 사용합니다. "
-            "핵심 정보(혼잡도, 대기 시간, 날씨)를 포함하고 이모지를 적절히 활용합니다."
+            "핵심 정보(혼잡도, 대기 시간, 날씨)를 포함하고 이모지를 적절히 활용합니다. "
+            "혼잡도 통계를 보고 '이 시간대는 쾌적할 것 같아요!' 또는 '사람이 많을 것 같아요!' 같은 조언을 해주세요."
         )
         
-        # Configure with thinking disabled for faster response
+        # Configure with multiple candidates
         config = types.GenerateContentConfig(
-            temperature=0.7,
-            max_output_tokens=200,
-            top_p=0.9,
+            candidate_count=count,
             system_instruction=system_instruction,
         )
         
@@ -163,7 +179,7 @@ def _call_google_gemini(prompt: str, model: str, api_key: str) -> Optional[str]:
         if "2.5" in model.lower() and "flash" in model.lower():
             config.thinking_config = types.ThinkingConfig(thinking_budget=0)
         
-        logger.debug(f"[Gemini] Sending prompt to {model}")
+        logger.debug(f"[Gemini] Sending prompt to {model} (requesting {count} responses)")
         
         response = client.models.generate_content(
             model=model,
@@ -171,12 +187,31 @@ def _call_google_gemini(prompt: str, model: str, api_key: str) -> Optional[str]:
             config=config,
         )
         
-        result = response.text.strip()
-        logger.debug(f"[Gemini] Response received: {result}")
-        return result
+        # Extract all candidate responses
+        results = []
+        if hasattr(response, 'candidates') and response.candidates:
+            for candidate in response.candidates:
+                if hasattr(candidate, 'content') and candidate.content:
+                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                        for part in candidate.content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                text = part.text.strip()
+                                if text:
+                                    results.append(text)
+                                    logger.debug(f"[Gemini] Response {len(results)}: {text}")
+        
+        if not results:
+            # Fallback to single response.text
+            result = response.text.strip()
+            if result:
+                results.append(result)
+                logger.debug(f"[Gemini] Fallback response: {result}")
+        
+        logger.debug(f"[Gemini] Total responses received: {len(results)}")
+        return results
     except Exception as exc:
         logger.error(f"Google Gemini API call failed: {exc}")
-        return None
+        return []
 
 
 def _call_ollama(prompt: str, model: str, base_url: str) -> Optional[str]:
@@ -209,8 +244,58 @@ def _call_ollama(prompt: str, model: str, base_url: str) -> Optional[str]:
         return None
 
 
+def _fetch_cached_tip() -> Optional[str]:
+    """Fetch a random cached tip if available and not expired."""
+    try:
+        now_ts = int(time.time())
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT tip_message FROM ai_tip_cache WHERE fetched_at >= %s",
+                (now_ts - CACHE_DURATION_SECONDS,)
+            )
+            rows = cursor.fetchall() or []
+            
+            if rows:
+                # Return random tip from cache
+                selected = random.choice(rows)
+                tip = selected["tip_message"]
+                logger.debug(f"[Cache] Returning cached tip: {tip}")
+                return tip
+            
+            return None
+    except Exception as exc:
+        logger.warning(f"Cache fetch failed: {exc}")
+        return None
+
+
+def _store_tips_to_cache(tips: list[str]) -> None:
+    """Store multiple tips to cache, clearing old ones."""
+    try:
+        now_ts = int(time.time())
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Clear old cache
+            cursor.execute("DELETE FROM ai_tip_cache")
+            
+            # Insert new tips
+            for tip in tips:
+                cursor.execute(
+                    "INSERT INTO ai_tip_cache (tip_message, fetched_at) VALUES (%s, %s)",
+                    (tip, now_ts)
+                )
+            
+            conn.commit()
+            logger.debug(f"[Cache] Stored {len(tips)} tips to cache")
+    except Exception as exc:
+        logger.error(f"Cache store failed: {exc}")
+
+
 def generate_summary(status_context: dict) -> Optional[str]:
     """Generate one-line summary of laundry room status using configured AI provider.
+    
+    Uses 10-minute cache: returns random cached tip if available, otherwise generates 5+ new tips.
     
     Args:
         status_context: Dict containing time, weather, rooms, totals, alerts, etc.
@@ -218,6 +303,13 @@ def generate_summary(status_context: dict) -> Optional[str]:
     Returns:
         Generated summary string or None if generation fails.
     """
+    # Try cache first
+    cached = _fetch_cached_tip()
+    if cached:
+        return cached
+    
+    logger.info("[Cache] Cache expired or empty, generating new tips")
+    
     provider = os.getenv("AI_PROVIDER", "google").lower()
     
     if provider not in {"google", "ollama"}:
@@ -227,20 +319,30 @@ def generate_summary(status_context: dict) -> Optional[str]:
     prompt = _build_prompt(status_context)
     logger.debug(f"AI prompt ({provider}):\n{prompt}")
     
+    tips = []
+    
     if provider == "google":
         api_key = os.getenv("GEMINI_API_KEY")
-        model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         
         if not api_key:
             logger.warning("GEMINI_API_KEY not configured")
             return None
         
-        return _call_google_gemini(prompt, model, api_key)
+        tips = _call_google_gemini(prompt, model, api_key, count=5)
     
     elif provider == "ollama":
         base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
         model = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
         
-        return _call_ollama(prompt, model, base_url)
+        # Ollama: generate multiple times
+        for _ in range(5):
+            result = _call_ollama(prompt, model, base_url)
+            if result:
+                tips.append(result)
+    
+    if tips:
+        _store_tips_to_cache(tips)
+        return random.choice(tips)
     
     return None
