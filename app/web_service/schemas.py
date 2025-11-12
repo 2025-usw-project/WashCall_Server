@@ -105,7 +105,6 @@ class LoadResponse(BaseModel):
     isreserved: int  # 0: 예약 안함, 1: 예약함
     machine_list: List[MachineItem]
     status_context: StatusContext | None = None
-    summary: str | None = None  # AI-generated one-line summary
 
 
 class ReserveRequest(BaseModel):
@@ -167,3 +166,7 @@ class StartCourseRequest(BaseModel):
 
 class StartCourseResponse(BaseModel):
     timer: int | None  # 남은 시간 (분)
+
+
+class TipResponse(BaseModel):
+    tip_message: str

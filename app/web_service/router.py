@@ -28,6 +28,7 @@ from app.web_service.schemas import (
     SurveyRequest, SurveyResponse,
     StartCourseRequest, StartCourseResponse,
     StatusContext, TimeContext, WeatherContext, TotalsContext, RoomSummary, AlertContext,
+    TipResponse,
 )
 from app.websocket.manager import broadcast_room_status, broadcast_notify
 from app.websocket.manager import manager
@@ -436,20 +437,215 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         alerts=alerts,
     )
 
-    # Generate AI summary
-    summary = None
-    try:
-        status_dict = status_context.model_dump()
-        summary = await run_in_threadpool(generate_summary, status_dict)
-    except Exception as exc:
-        logger.warning(f"AI summary generation failed: {exc}")
-
     return LoadResponse(
         isreserved=isreserved,
         machine_list=machines,
         status_context=status_context,
-        summary=summary,
     )
+
+
+@router.get("/tip", response_model=TipResponse)
+async def get_tip(authorization: str | None = Header(None)):
+    """Generate AI-powered laundry room status tip."""
+    token = _resolve_token(authorization, None)
+    try:
+        user = get_current_user(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    user_id = int(user["user_id"])
+    now_ts = int(time.time())
+    now_dt = datetime.now(tz=pytz.timezone("Asia/Seoul"))
+    kr_holidays = holidays.country_holidays("KR")
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor(dictionary=True)
+        
+        # Fetch machines for user's subscribed rooms
+        cursor.execute(
+            """
+            SELECT m.machine_id, m.room_id, m.status, m.course_name,
+                   COALESCE(rt.room_name, m.room_name) AS room_name,
+                   UNIX_TIMESTAMP(m.first_update) AS first_ts
+            FROM machine_table m
+            JOIN room_subscriptions rs ON m.room_id = rs.room_id
+            LEFT JOIN room_table rt ON m.room_id = rt.room_id
+            WHERE rs.user_id = %s
+            """,
+            (user_id,)
+        )
+        machines = cursor.fetchall() or []
+
+        # Fetch course averages
+        course_names = {m.get("course_name") for m in machines if m.get("course_name")}
+        course_avg_map = {}
+        if course_names:
+            placeholders = ",".join(["%s"] * len(course_names))
+            cursor.execute(
+                f"SELECT course_name, avg_time FROM time_table WHERE course_name IN ({placeholders})",
+                tuple(course_names),
+            )
+            for row in cursor.fetchall() or []:
+                cn = row.get("course_name")
+                avg = row.get("avg_time")
+                if cn and avg is not None:
+                    try:
+                        course_avg_map[cn] = int(avg)
+                    except Exception:
+                        pass
+
+        # Aggregate by room
+        room_stats = defaultdict(lambda: {"total": 0, "busy": 0, "room_name": ""})
+        room_remaining_times = defaultdict(list)
+        
+        for m in machines:
+            room_id = m.get("room_id")
+            room_name = m.get("room_name", "")
+            status = (m.get("status") or "").upper()
+            
+            room_stats[room_id]["room_name"] = room_name
+            room_stats[room_id]["total"] += 1
+            
+            if status in {"WASHING", "SPINNING"}:
+                room_stats[room_id]["busy"] += 1
+                
+                course_name = m.get("course_name")
+                first_ts = m.get("first_ts")
+                if course_name and first_ts is not None:
+                    avg_minutes = course_avg_map.get(course_name)
+                    if avg_minutes:
+                        try:
+                            remaining, negative = compute_remaining_minutes(int(first_ts), avg_minutes, now_ts)
+                            if not negative and remaining is not None:
+                                room_remaining_times[room_id].append(remaining)
+                        except Exception:
+                            pass
+
+        # Fetch reservations per room
+        cursor.execute(
+            """
+            SELECT room_id, COUNT(*) as cnt
+            FROM reservation_table
+            WHERE isreserved = 1
+            GROUP BY room_id
+            """
+        )
+        room_reservation_counts = {row["room_id"]: row["cnt"] for row in cursor.fetchall() or []}
+
+        # Fetch notify subscriptions per room
+        cursor.execute(
+            """
+            SELECT m.room_id, COUNT(*) as cnt
+            FROM notify_subscriptions ns
+            JOIN machine_table m ON ns.machine_uuid = m.machine_uuid
+            GROUP BY m.room_id
+            """
+        )
+        room_notify_counts = {row["room_id"]: row["cnt"] for row in cursor.fetchall() or []}
+
+        # Count recent finished machines (last 30 minutes)
+        cursor.execute(
+            """
+            SELECT COUNT(*) as cnt FROM machine_table
+            WHERE status = 'FINISHED' AND UNIX_TIMESTAMP(first_update) >= %s
+            """,
+            (now_ts - 1800,)
+        )
+        recent_finished_count = cursor.fetchone().get("cnt", 0) if cursor.fetchone() else 0
+
+    # Build time context
+    weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][now_dt.weekday()]
+    hour_24 = now_dt.hour
+    is_holiday = now_dt.date() in kr_holidays
+    holiday_name = kr_holidays.get(now_dt.date()) if is_holiday else None
+    
+    time_context = TimeContext(
+        weekday_kr=weekday_kr,
+        hour_24h=hour_24,
+        hour_12h=hour_24 if hour_24 <= 12 else hour_24 - 12,
+        period_kr="오전" if hour_24 < 12 else "오후",
+        is_holiday=is_holiday,
+        holiday_name=holiday_name,
+    )
+
+    # Fetch weather
+    weather_raw = await run_in_threadpool(fetch_kma_weather, now_dt)
+    weather_context = WeatherContext(**weather_raw) if weather_raw else None
+
+    # Build room summaries
+    room_summaries = []
+    for room_id, stats in room_stats.items():
+        total = stats["total"]
+        busy = stats["busy"]
+        idle = max(total - busy, 0)
+        reservation_count = room_reservation_counts.get(room_id, 0)
+        notify_count = room_notify_counts.get(room_id, 0)
+        
+        remaining_list = room_remaining_times.get(room_id, [])
+        avg_remaining = mean(remaining_list) if remaining_list else None
+        max_remaining = max(remaining_list) if remaining_list else None
+        
+        per_cycle = None
+        if stats.get("room_name"):
+            for m in machines:
+                if m.get("room_id") == room_id and m.get("course_name"):
+                    per_cycle = course_avg_map.get(m["course_name"])
+                    if per_cycle:
+                        break
+        
+        estimated_wait = None
+        if max_remaining is not None:
+            estimated_wait = max_remaining + reservation_count * (per_cycle or 0)
+
+        room_summaries.append(
+            RoomSummary(
+                room_id=room_id,
+                room_name=stats["room_name"],
+                machines_total=total,
+                machines_busy=busy,
+                machines_idle=idle,
+                avg_remaining_minutes=avg_remaining,
+                max_remaining_minutes=max_remaining,
+                reservation_count=reservation_count,
+                notify_count=notify_count,
+                estimated_wait_minutes=estimated_wait,
+            )
+        )
+
+    totals = TotalsContext(
+        machines_total=sum(stats["total"] for stats in room_stats.values()),
+        machines_busy=sum(stats["busy"] for stats in room_stats.values()),
+        machines_idle=sum(max(stats["total"] - stats["busy"], 0) for stats in room_stats.values()),
+        reservations_total=sum(room_reservation_counts.values()),
+        notify_total=sum(room_notify_counts.values()),
+    )
+
+    alerts = AlertContext(
+        recent_finished_count=recent_finished_count,
+        active_notify_subscriptions=sum(room_notify_counts.values()),
+    )
+
+    status_context = StatusContext(
+        time=time_context,
+        weather=weather_context,
+        totals=totals,
+        rooms=room_summaries,
+        alerts=alerts,
+    )
+
+    # Generate AI tip
+    tip_message = None
+    try:
+        status_dict = status_context.model_dump()
+        tip_message = await run_in_threadpool(generate_summary, status_dict)
+    except Exception as exc:
+        logger.warning(f"AI tip generation failed: {exc}")
+    
+    if not tip_message:
+        tip_message = "세탁실 정보를 불러올 수 없습니다."
+    
+    return TipResponse(tip_message=tip_message)
+
 
 @router.post("/reserve")
 async def reserve(body: ReserveRequest, authorization: str | None = Header(None)):

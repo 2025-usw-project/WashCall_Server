@@ -4,6 +4,8 @@ import os
 from typing import Optional
 
 import requests
+from google import genai
+from google.genai import types
 from loguru import logger
 
 
@@ -81,39 +83,39 @@ def _build_prompt(status_context: dict) -> str:
 
 
 def _call_google_gemini(prompt: str, model: str, api_key: str) -> Optional[str]:
-    """Call Google Gemini API for text generation."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 200,
-            "topP": 0.9,
-        }
-    }
-    
+    """Call Google Gemini API for text generation with thinking disabled."""
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        client = genai.Client(api_key=api_key)
         
-        # Extract generated text
-        candidates = data.get("candidates", [])
-        if candidates and len(candidates) > 0:
-            content = candidates[0].get("content", {})
-            parts = content.get("parts", [])
-            if parts and len(parts) > 0:
-                text = parts[0].get("text", "").strip()
-                return text
+        # System instruction for concise summarization
+        system_instruction = (
+            "당신은 대학 기숙사 세탁실 현황을 간결하게 요약하는 AI입니다. "
+            "반드시 한 줄로만 요약하며, 자연스럽고 친근한 말투를 사용합니다. "
+            "핵심 정보(혼잡도, 대기 시간, 날씨)를 포함하고 이모지를 적절히 활용합니다."
+        )
         
-        logger.warning(f"Gemini response missing expected structure: {data}")
+        # Configure with thinking disabled for faster response
+        config = types.GenerateContentConfig(
+            temperature=0.7,
+            max_output_tokens=200,
+            top_p=0.9,
+            system_instruction=system_instruction,
+        )
+        
+        # Disable thinking for Gemini 2.5 Flash
+        if "2.5" in model.lower() and "flash" in model.lower():
+            config.thinking_config = types.ThinkingConfig(thinking_budget=0)
+        
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=config,
+        )
+        
+        if response and response.text:
+            return response.text.strip()
+        
+        logger.warning("Gemini response missing text")
         return None
     except Exception as exc:
         logger.error(f"Google Gemini API call failed: {exc}")
