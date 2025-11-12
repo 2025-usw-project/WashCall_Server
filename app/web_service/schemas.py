@@ -105,6 +105,7 @@ class LoadResponse(BaseModel):
     isreserved: int  # 0: 예약 안함, 1: 예약함
     machine_list: List[MachineItem]
     status_context: StatusContext | None = None
+    summary: str | None = None  # AI-generated one-line summary
 
 
 class ReserveRequest(BaseModel):

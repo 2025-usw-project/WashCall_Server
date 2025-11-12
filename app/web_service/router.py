@@ -14,6 +14,7 @@ from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
 )
 from app.database import get_db_connection
+from app.services.ai_summary import generate_summary
 from app.services.kma_weather import fetch_kma_weather
 from app.utils.timer import compute_remaining_minutes
 from app.web_service.schemas import (
@@ -435,10 +436,19 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         alerts=alerts,
     )
 
+    # Generate AI summary
+    summary = None
+    try:
+        status_dict = status_context.model_dump()
+        summary = await run_in_threadpool(generate_summary, status_dict)
+    except Exception as exc:
+        logger.warning(f"AI summary generation failed: {exc}")
+
     return LoadResponse(
         isreserved=isreserved,
         machine_list=machines,
         status_context=status_context,
+        summary=summary,
     )
 
 @router.post("/reserve")
