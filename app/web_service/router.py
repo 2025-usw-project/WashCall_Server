@@ -1,4 +1,3 @@
-import asyncio
 from collections import defaultdict
 from datetime import datetime
 import time
@@ -627,15 +626,13 @@ async def get_tip(authorization: str | None = Header(None)):
     now_dt = datetime.now(tz=pytz.timezone("Asia/Seoul"))
     kr_holidays = holidays.country_holidays("KR")
 
-    # 병렬 데이터 조회 (6개 작업 동시 실행)
-    machines_data, reservations, notify_counts, recent_finished, weather_raw, congestion_stats = await asyncio.gather(
-        _fetch_machines_data(user_id),
-        _fetch_reservations(),
-        _fetch_notify_counts(),
-        _fetch_recent_finished(now_ts),
-        run_in_threadpool(fetch_kma_weather, now_dt),
-        _fetch_congestion_stats(),
-    )
+    # 순차 데이터 조회 (DB 연결 풀 고갈 방지)
+    machines_data = await _fetch_machines_data(user_id)
+    reservations = await _fetch_reservations()
+    notify_counts = await _fetch_notify_counts()
+    recent_finished = await _fetch_recent_finished(now_ts)
+    weather_raw = await run_in_threadpool(fetch_kma_weather, now_dt)
+    congestion_stats = await _fetch_congestion_stats()
     
     machines, course_avg_map = machines_data
     room_reservation_counts = reservations
