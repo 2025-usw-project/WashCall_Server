@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 from datetime import datetime
 import time
@@ -485,9 +486,136 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
     )
 
 
+async def _fetch_machines_data(user_id: int) -> tuple[list, dict]:
+    """Fetch machines and course averages asynchronously."""
+    def _fetch():
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT m.machine_id, m.room_id, m.status, m.course_name,
+                       COALESCE(rt.room_name, m.room_name) AS room_name,
+                       UNIX_TIMESTAMP(m.first_update) AS first_ts
+                FROM machine_table m
+                JOIN room_subscriptions rs ON m.room_id = rs.room_id
+                LEFT JOIN room_table rt ON m.room_id = rt.room_id
+                WHERE rs.user_id = %s
+                """,
+                (user_id,)
+            )
+            machines = cursor.fetchall() or []
+            
+            # Fetch course averages
+            course_names = {m.get("course_name") for m in machines if m.get("course_name")}
+            course_avg_map = {}
+            if course_names:
+                placeholders = ",".join(["%s"] * len(course_names))
+                cursor.execute(
+                    f"SELECT course_name, avg_time FROM time_table WHERE course_name IN ({placeholders})",
+                    tuple(course_names),
+                )
+                for row in cursor.fetchall() or []:
+                    cn = row.get("course_name")
+                    avg = row.get("avg_time")
+                    if cn and avg is not None:
+                        try:
+                            course_avg_map[cn] = int(avg)
+                        except Exception:
+                            pass
+            
+            return machines, course_avg_map
+    
+    return await run_in_threadpool(_fetch)
+
+
+async def _fetch_reservations() -> dict:
+    """Fetch reservation counts per room asynchronously."""
+    def _fetch():
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT room_id, COUNT(*) as cnt
+                FROM reservation_table
+                WHERE isreserved = 1
+                GROUP BY room_id
+                """
+            )
+            return {row["room_id"]: row["cnt"] for row in cursor.fetchall() or []}
+    
+    return await run_in_threadpool(_fetch)
+
+
+async def _fetch_notify_counts() -> dict:
+    """Fetch notify subscription counts per room asynchronously."""
+    def _fetch():
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT m.room_id, COUNT(*) as cnt
+                FROM notify_subscriptions ns
+                JOIN machine_table m ON ns.machine_uuid = m.machine_uuid
+                GROUP BY m.room_id
+                """
+            )
+            return {row["room_id"]: row["cnt"] for row in cursor.fetchall() or []}
+    
+    return await run_in_threadpool(_fetch)
+
+
+async def _fetch_recent_finished(now_ts: int) -> int:
+    """Fetch count of recently finished machines asynchronously."""
+    def _fetch():
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT COUNT(*) as cnt FROM machine_table
+                WHERE status = 'FINISHED' AND UNIX_TIMESTAMP(first_update) >= %s
+                """,
+                (now_ts - 1800,)
+            )
+            row = cursor.fetchone()
+            return row.get("cnt", 0) if row else 0
+    
+    return await run_in_threadpool(_fetch)
+
+
+async def _fetch_congestion_stats() -> dict:
+    """Fetch congestion statistics asynchronously."""
+    def _fetch():
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("SELECT busy_day, busy_time, busy_count FROM busy_table")
+                rows = cursor.fetchall() or []
+                
+                days = ["월", "화", "수", "목", "금", "토", "일"]
+                congestion_stats = {d: [0] * 24 for d in days}
+                
+                for row in rows:
+                    day = str(row.get("busy_day") or "")
+                    hour = row.get("busy_time")
+                    count = row.get("busy_count")
+                    try:
+                        hour_int = int(hour)
+                    except Exception:
+                        continue
+                    if day in congestion_stats and 0 <= hour_int <= 23:
+                        congestion_stats[day][hour_int] = int(count or 0)
+                
+                return congestion_stats
+        except Exception as exc:
+            logger.warning(f"Congestion stats fetch failed: {exc}")
+            return {d: [0] * 24 for d in ["월", "화", "수", "목", "금", "토", "일"]}
+    
+    return await run_in_threadpool(_fetch)
+
+
 @router.get("/tip", response_model=TipResponse)
 async def get_tip(authorization: str | None = Header(None)):
-    """Generate AI-powered laundry room status tip."""
+    """Generate AI-powered laundry room status tip (fully async)."""
     token = _resolve_token(authorization, None)
     try:
         user = get_current_user(token)
@@ -499,101 +627,47 @@ async def get_tip(authorization: str | None = Header(None)):
     now_dt = datetime.now(tz=pytz.timezone("Asia/Seoul"))
     kr_holidays = holidays.country_holidays("KR")
 
-    with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
+    # 병렬 데이터 조회 (6개 작업 동시 실행)
+    machines_data, reservations, notify_counts, recent_finished, weather_raw, congestion_stats = await asyncio.gather(
+        _fetch_machines_data(user_id),
+        _fetch_reservations(),
+        _fetch_notify_counts(),
+        _fetch_recent_finished(now_ts),
+        run_in_threadpool(fetch_kma_weather, now_dt),
+        _fetch_congestion_stats(),
+    )
+    
+    machines, course_avg_map = machines_data
+    room_reservation_counts = reservations
+    room_notify_counts = notify_counts
+    recent_finished_count = recent_finished
+    
+    # Aggregate by room
+    room_stats = defaultdict(lambda: {"total": 0, "busy": 0, "room_name": ""})
+    room_remaining_times = defaultdict(list)
+    
+    for m in machines:
+        room_id = m.get("room_id")
+        room_name = m.get("room_name", "")
+        status = (m.get("status") or "").upper()
         
-        # Fetch machines for user's subscribed rooms
-        cursor.execute(
-            """
-            SELECT m.machine_id, m.room_id, m.status, m.course_name,
-                   COALESCE(rt.room_name, m.room_name) AS room_name,
-                   UNIX_TIMESTAMP(m.first_update) AS first_ts
-            FROM machine_table m
-            JOIN room_subscriptions rs ON m.room_id = rs.room_id
-            LEFT JOIN room_table rt ON m.room_id = rt.room_id
-            WHERE rs.user_id = %s
-            """,
-            (user_id,)
-        )
-        machines = cursor.fetchall() or []
-
-        # Fetch course averages
-        course_names = {m.get("course_name") for m in machines if m.get("course_name")}
-        course_avg_map = {}
-        if course_names:
-            placeholders = ",".join(["%s"] * len(course_names))
-            cursor.execute(
-                f"SELECT course_name, avg_time FROM time_table WHERE course_name IN ({placeholders})",
-                tuple(course_names),
-            )
-            for row in cursor.fetchall() or []:
-                cn = row.get("course_name")
-                avg = row.get("avg_time")
-                if cn and avg is not None:
+        room_stats[room_id]["room_name"] = room_name
+        room_stats[room_id]["total"] += 1
+        
+        if status in {"WASHING", "SPINNING"}:
+            room_stats[room_id]["busy"] += 1
+            
+            course_name = m.get("course_name")
+            first_ts = m.get("first_ts")
+            if course_name and first_ts is not None:
+                avg_minutes = course_avg_map.get(course_name)
+                if avg_minutes:
                     try:
-                        course_avg_map[cn] = int(avg)
+                        remaining, negative = compute_remaining_minutes(int(first_ts), avg_minutes, now_ts)
+                        if not negative and remaining is not None:
+                            room_remaining_times[room_id].append(remaining)
                     except Exception:
                         pass
-
-        # Aggregate by room
-        room_stats = defaultdict(lambda: {"total": 0, "busy": 0, "room_name": ""})
-        room_remaining_times = defaultdict(list)
-        
-        for m in machines:
-            room_id = m.get("room_id")
-            room_name = m.get("room_name", "")
-            status = (m.get("status") or "").upper()
-            
-            room_stats[room_id]["room_name"] = room_name
-            room_stats[room_id]["total"] += 1
-            
-            if status in {"WASHING", "SPINNING"}:
-                room_stats[room_id]["busy"] += 1
-                
-                course_name = m.get("course_name")
-                first_ts = m.get("first_ts")
-                if course_name and first_ts is not None:
-                    avg_minutes = course_avg_map.get(course_name)
-                    if avg_minutes:
-                        try:
-                            remaining, negative = compute_remaining_minutes(int(first_ts), avg_minutes, now_ts)
-                            if not negative and remaining is not None:
-                                room_remaining_times[room_id].append(remaining)
-                        except Exception:
-                            pass
-
-        # Fetch reservations per room
-        cursor.execute(
-            """
-            SELECT room_id, COUNT(*) as cnt
-            FROM reservation_table
-            WHERE isreserved = 1
-            GROUP BY room_id
-            """
-        )
-        room_reservation_counts = {row["room_id"]: row["cnt"] for row in cursor.fetchall() or []}
-
-        # Fetch notify subscriptions per room
-        cursor.execute(
-            """
-            SELECT m.room_id, COUNT(*) as cnt
-            FROM notify_subscriptions ns
-            JOIN machine_table m ON ns.machine_uuid = m.machine_uuid
-            GROUP BY m.room_id
-            """
-        )
-        room_notify_counts = {row["room_id"]: row["cnt"] for row in cursor.fetchall() or []}
-
-        # Count recent finished machines (last 30 minutes)
-        cursor.execute(
-            """
-            SELECT COUNT(*) as cnt FROM machine_table
-            WHERE status = 'FINISHED' AND UNIX_TIMESTAMP(first_update) >= %s
-            """,
-            (now_ts - 1800,)
-        )
-        row = cursor.fetchone()
-        recent_finished_count = row.get("cnt", 0) if row else 0
 
     # Build time context
     weekday_labels = ["월", "화", "수", "목", "금", "토", "일"]
@@ -609,8 +683,7 @@ async def get_tip(authorization: str | None = Header(None)):
         is_weekend=is_weekend,
     )
 
-    # Fetch weather
-    weather_raw = await run_in_threadpool(fetch_kma_weather, now_dt)
+    # Weather context
     weather_context = WeatherContext(**weather_raw) if weather_raw else None
 
     # Build room summaries
@@ -674,35 +747,11 @@ async def get_tip(authorization: str | None = Header(None)):
         alerts=alerts,
     )
 
-    # Fetch congestion statistics
-    congestion_stats = {}
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT busy_day, busy_time, busy_count FROM busy_table")
-            rows = cursor.fetchall() or []
-            
-            days = ["월", "화", "수", "목", "금", "토", "일"]
-            congestion_stats = {d: [0] * 24 for d in days}
-            
-            for row in rows:
-                day = str(row.get("busy_day") or "")
-                hour = row.get("busy_time")
-                count = row.get("busy_count")
-                try:
-                    hour_int = int(hour)
-                except Exception:
-                    continue
-                if day in congestion_stats and 0 <= hour_int <= 23:
-                    congestion_stats[day][hour_int] = int(count or 0)
-    except Exception as exc:
-        logger.warning(f"Congestion stats fetch failed: {exc}")
-
-    # Generate AI tip
+    # Generate AI tip (비동기 처리)
     tip_message = None
     try:
         status_dict = status_context.model_dump()
-        status_dict["congestion_stats"] = congestion_stats  # Add congestion data
+        status_dict["congestion_stats"] = congestion_stats
         tip_message = await run_in_threadpool(generate_summary, status_dict)
     except Exception as exc:
         logger.warning(f"AI tip generation failed: {exc}")
