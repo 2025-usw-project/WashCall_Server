@@ -12,7 +12,7 @@ from loguru import logger
 
 from app.database import get_db_connection
 
-CACHE_DURATION_SECONDS = 600  # 10분
+CACHE_DURATION_SECONDS = 1800  # 30분
 
 
 def _build_prompt(status_context: dict) -> str:
@@ -20,7 +20,8 @@ def _build_prompt(status_context: dict) -> str:
     prompt_parts = [
         "당신은 대학 기숙사 세탁실 이용 시간을 추천하는 AI입니다.",
         "다음 정보를 바탕으로 **언제 세탁하면 좋을지** **무조건 한 줄**로 추천해주세요.",
-        "현재 상황을 간단히 언급하고, 혼잡도 통계를 분석하여 가장 한산한 시간대(요일+시간)를 추천하세요.",
+        "혼잡도 통계를 분석하여 가장 한산한 시간대(요일+시간)를 추천하세요.",
+        "현재 상황은 언급하지 말고, 통계 기반으로만 가장 여유로운 시간대를 추천해주세요.",
         "자연스럽고 친근한 말투로 작성하되, 미래 예측 형태로 작성해주세요.",
         "",
         "# 현재 세탁실 상황",
@@ -139,10 +140,10 @@ def _build_prompt(status_context: dict) -> str:
 
     prompt_parts.append("")
     prompt_parts.append(
-        "위 정보를 바탕으로 **언제 세탁하면 좋을지** 한 줄로 추천해주세요. "
-        "혼잡도 통계를 분석하여 가장 한산한 시간대(요일과 시간)를 찾고, "
-        "'현재는 X대 사용중이지만, 내일 Y요일 Z시가 가장 한산할 것 같아요!' 또는 "
-        "'지금보다 오늘 저녁 8시가 더 쾌적할 것 같아요!' 같은 식으로 **미래 시간대를 추천**해주세요. "
+        "위 혼잡도 통계를 분석하여 가장 한산한 시간대(요일과 시간)를 찾아 한 줄로 추천해주세요. "
+        "'통계상으로는 목요일 오후 3시부터 5시까지가 평균 0.5대로 가장 한산할 것 같아요!' 또는 "
+        "'수요일 새벽 0시부터 오전 8시까지가 평균 0대로 가장 여유로울 것 같아요!' 같은 식으로 추천해주세요. "
+        "현재 상황은 언급하지 말고, 통계 기반 예측만 제공해주세요. "
         "친근한 말투와 이모지를 적절히 사용하면 좋습니다."
     )
 
@@ -169,8 +170,9 @@ def _call_google_gemini(prompt: str, model: str, api_key: str, count: int = 5) -
             "당신은 대학 기숙사 세탁실 이용 시간을 추천하는 AI입니다. "
             "반드시 한 줄로만 추천하며, 자연스럽고 친근한 말투를 사용합니다. "
             "혼잡도 통계를 분석하여 가장 한산한 미래 시간대(요일+시간)를 추천하세요. "
-            "'내일 금요일 저녁 8시가 한산할 것 같아요!' 또는 '오늘 밤 10시 이후가 쾌적할 거예요!' 같은 식으로 "
-            "**미래 예측** 형태로 추천해주세요. 이모지를 적절히 활용하세요."
+            "현재 상황은 언급하지 말고, 통계 데이터만을 기반으로 추천해주세요. "
+            "'통계상으로는 목요일 오후 2시부터 4시까지가 평균 0.3대로 가장 한산할 것 같아요!' 같은 식으로 "
+            "통계 기반 예측만 제공해주세요. 이모지를 적절히 활용하세요."
         )
         
         # Configure with multiple candidates
@@ -296,10 +298,86 @@ def _store_tips_to_cache(tips: list[str]) -> None:
         logger.error(f"Cache store failed: {exc}")
 
 
+def get_cached_tip_immediate() -> Optional[str]:
+    """즉시 캐시된 tip 반환 (유효기간 체크 없음, 없으면 None)."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT tip_message FROM ai_tip_cache ORDER BY fetched_at DESC LIMIT 5")
+            rows = cursor.fetchall() or []
+            
+            if rows:
+                # Return random tip from recent cache (no expiration check)
+                selected = random.choice(rows)
+                tip = selected["tip_message"]
+                logger.debug(f"[Cache] Returning cached tip (no expiration check): {tip}")
+                return tip
+            
+            return None
+    except Exception as exc:
+        logger.warning(f"Cache fetch failed: {exc}")
+        return None
+
+
+def is_cache_stale() -> bool:
+    """캐시가 30분 이상 오래되었는지 확인."""
+    try:
+        now_ts = int(time.time())
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT COUNT(*) as cnt FROM ai_tip_cache WHERE fetched_at >= %s", (now_ts - CACHE_DURATION_SECONDS,))
+            row = cursor.fetchone()
+            count = row.get("cnt", 0) if row else 0
+            return count == 0
+    except Exception as exc:
+        logger.warning(f"Cache staleness check failed: {exc}")
+        return True
+
+
+def refresh_tips_background(status_context: dict) -> None:
+    """백그라운드에서 새로운 AI tip 생성 (동기 함수)."""
+    logger.info("[Background] Refreshing AI tips in background")
+    
+    provider = os.getenv("AI_PROVIDER", "google").lower()
+    if provider not in ("google", "ollama"):
+        logger.warning(f"Invalid AI_PROVIDER: {provider}. Must be 'google' or 'ollama'.")
+        return
+    
+    prompt = _build_prompt(status_context)
+    logger.debug(f"AI prompt ({provider}):\n{prompt}")
+    
+    tips = []
+    
+    if provider == "google":
+        api_key = os.getenv("GEMINI_API_KEY")
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        
+        if not api_key:
+            logger.warning("GEMINI_API_KEY not configured")
+            return
+        
+        tips = _call_google_gemini(prompt, model, api_key, count=5)
+    
+    elif provider == "ollama":
+        base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        model = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
+        
+        for _ in range(5):
+            result = _call_ollama(prompt, model, base_url)
+            if result:
+                tips.append(result)
+    
+    if tips:
+        _store_tips_to_cache(tips)
+        logger.info(f"[Background] Successfully generated and cached {len(tips)} tips")
+    else:
+        logger.warning("[Background] Failed to generate tips")
+
+
 def generate_summary(status_context: dict) -> Optional[str]:
     """Generate one-line summary of laundry room status using configured AI provider.
     
-    Uses 10-minute cache: returns random cached tip if available, otherwise generates 5+ new tips.
+    Uses 30-minute cache: returns random cached tip if available, otherwise generates 5+ new tips.
     
     Args:
         status_context: Dict containing time, weather, rooms, totals, alerts, etc.
