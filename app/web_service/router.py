@@ -339,6 +339,11 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
     course_names = {row.get("course_name") for row in rows if row.get("course_name")}
     course_avg_map, course_washing_map, course_spinning_map = await _fetch_load_course_avgs(course_names)
     
+    # 디버깅: time_table에서 가져온 평균 시간 정보 확인
+    logger.info(f"[TIMER DEBUG] course_avg_map: {course_avg_map}")
+    logger.info(f"[TIMER DEBUG] course_washing_map: {course_washing_map}")
+    logger.info(f"[TIMER DEBUG] course_spinning_map: {course_spinning_map}")
+    
     notify_set = await _fetch_load_notify_subs(user_id)
     isreserved = await _fetch_load_user_reservation(user_id)
     
@@ -371,28 +376,55 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         avg_minutes_val: int | None = None
         elapsed_minutes_val: int | None = None
         
+        # 디버깅: 타이머 계산 조건 확인
+        logger.info(
+            f"[TIMER DEBUG] machine_id={r.get('machine_id')}, status={status}, "
+            f"course_name={course_name}, first_ts_int={first_ts_int}, spinning_update={spinning_update}"
+        )
+        
         if status in busy_statuses and course_name:
             if status == "SPINNING":
                 # 탈수 중: avg_spinning_time 사용, spinning_update부터 경과 시간 계산
                 avg_minutes_val = course_spinning_map.get(course_name)
+                logger.info(
+                    f"[TIMER DEBUG] SPINNING: course_name={course_name}, "
+                    f"avg_spinning_time={avg_minutes_val}, spinning_update={spinning_update}"
+                )
                 if spinning_update and avg_minutes_val:
                     elapsed_seconds = now_ts - int(spinning_update)
                     elapsed_minutes_val = elapsed_seconds // 60
                     timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+                    logger.info(f"[TIMER DEBUG] SPINNING 계산 완료: timer={timer_val}, avg={avg_minutes_val}, elapsed={elapsed_minutes_val}")
+                else:
+                    logger.warning(f"[TIMER DEBUG] SPINNING 계산 실패: spinning_update={spinning_update}, avg_minutes_val={avg_minutes_val}")
             elif status == "WASHING":
                 # 세탁 중: avg_time 사용 (전체 코스 시간), first_update부터 경과 시간 계산
                 avg_minutes_val = course_avg_map.get(course_name)
+                logger.info(
+                    f"[TIMER DEBUG] WASHING: course_name={course_name}, "
+                    f"avg_time={avg_minutes_val}, first_ts_int={first_ts_int}"
+                )
                 if first_ts_int and avg_minutes_val:
                     elapsed_seconds = now_ts - first_ts_int
                     elapsed_minutes_val = elapsed_seconds // 60
                     timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+                    logger.info(f"[TIMER DEBUG] WASHING 계산 완료: timer={timer_val}, avg={avg_minutes_val}, elapsed={elapsed_minutes_val}")
+                else:
+                    logger.warning(f"[TIMER DEBUG] WASHING 계산 실패: first_ts_int={first_ts_int}, avg_minutes_val={avg_minutes_val}")
             else:  # DRYING
                 # 건조 중: avg_time 사용, first_update부터 경과 시간 계산
                 avg_minutes_val = course_avg_map.get(course_name)
+                logger.info(
+                    f"[TIMER DEBUG] DRYING: course_name={course_name}, "
+                    f"avg_time={avg_minutes_val}, first_ts_int={first_ts_int}"
+                )
                 if first_ts_int and avg_minutes_val:
                     elapsed_seconds = now_ts - first_ts_int
                     elapsed_minutes_val = elapsed_seconds // 60
                     timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+                    logger.info(f"[TIMER DEBUG] DRYING 계산 완료: timer={timer_val}, avg={avg_minutes_val}, elapsed={elapsed_minutes_val}")
+                else:
+                    logger.warning(f"[TIMER DEBUG] DRYING 계산 실패: first_ts_int={first_ts_int}, avg_minutes_val={avg_minutes_val}")
 
         machines.append(
             MachineItem(
