@@ -373,21 +373,22 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         
         if status in busy_statuses and course_name:
             if status == "SPINNING":
-                # 탈수 중: spinning_update부터 경과 시간 계산
+                # 탈수 중: avg_spinning_time 사용, spinning_update부터 경과 시간 계산
                 avg_minutes_val = course_spinning_map.get(course_name)
                 if spinning_update and avg_minutes_val:
                     elapsed_seconds = now_ts - int(spinning_update)
                     elapsed_minutes_val = elapsed_seconds // 60
                     timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
-            else:
-                # WASHING 또는 DRYING: first_update부터 경과 시간 계산
-                if status == "WASHING":
-                    avg_minutes_val = course_washing_map.get(course_name)
-                    if avg_minutes_val is None:
-                        avg_minutes_val = course_avg_map.get(course_name)
-                else:  # DRYING
-                    avg_minutes_val = course_avg_map.get(course_name)
-                
+            elif status == "WASHING":
+                # 세탁 중: avg_time 사용 (전체 코스 시간), first_update부터 경과 시간 계산
+                avg_minutes_val = course_avg_map.get(course_name)
+                if first_ts_int and avg_minutes_val:
+                    elapsed_seconds = now_ts - first_ts_int
+                    elapsed_minutes_val = elapsed_seconds // 60
+                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+            else:  # DRYING
+                # 건조 중: avg_time 사용, first_update부터 경과 시간 계산
+                avg_minutes_val = course_avg_map.get(course_name)
                 if first_ts_int and avg_minutes_val:
                     elapsed_seconds = now_ts - first_ts_int
                     elapsed_minutes_val = elapsed_seconds // 60

@@ -128,7 +128,7 @@ async def broadcast_room_status(machine_id: int, status: str):
             if row_avg:
                 try:
                     if machine_status == "SPINNING":
-                        # 탈수 중: spinning_update부터 경과 시간
+                        # 탈수 중: avg_spinning_time 사용, spinning_update부터 경과 시간
                         avg_spinning = row_avg.get("avg_spinning_time")
                         if avg_spinning and spinning_update:
                             avg_minutes = int(avg_spinning)
@@ -136,17 +136,15 @@ async def broadcast_room_status(machine_id: int, status: str):
                             elapsed_minutes = elapsed_seconds // 60
                             timer_minutes = max(0, avg_minutes - elapsed_minutes)
                     elif machine_status == "WASHING":
-                        # 세탁 중: first_update부터 경과 시간
-                        avg_washing = row_avg.get("avg_washing_time")
-                        if not avg_washing:
-                            avg_washing = row_avg.get("avg_time")
-                        if avg_washing and first_ts:
-                            avg_minutes = int(avg_washing)
+                        # 세탁 중: avg_time 사용 (전체 코스 시간), first_update부터 경과 시간
+                        avg_time = row_avg.get("avg_time")
+                        if avg_time and first_ts:
+                            avg_minutes = int(avg_time)
                             elapsed_seconds = now_ts - int(first_ts)
                             elapsed_minutes = elapsed_seconds // 60
                             timer_minutes = max(0, avg_minutes - elapsed_minutes)
                     elif machine_status == "DRYING":
-                        # 건조 중: first_update부터 경과 시간
+                        # 건조 중: avg_time 사용, first_update부터 경과 시간
                         avg_time = row_avg.get("avg_time")
                         if avg_time and first_ts:
                             avg_minutes = int(avg_time)
@@ -262,6 +260,7 @@ async def broadcast_notify(machine_id: int, status: str):
             if avg_row:
                 try:
                     if machine_status == "SPINNING":
+                        # 탈수 중: avg_spinning_time 사용
                         avg_spinning = avg_row.get("avg_spinning_time")
                         if avg_spinning and spinning_update:
                             avg_minutes = int(avg_spinning)
@@ -269,15 +268,15 @@ async def broadcast_notify(machine_id: int, status: str):
                             elapsed_minutes = elapsed_seconds // 60
                             timer_minutes = max(0, avg_minutes - elapsed_minutes)
                     elif machine_status == "WASHING":
-                        avg_washing = avg_row.get("avg_washing_time")
-                        if not avg_washing:
-                            avg_washing = avg_row.get("avg_time")
-                        if avg_washing and first_ts:
-                            avg_minutes = int(avg_washing)
+                        # 세탁 중: avg_time 사용 (전체 코스 시간)
+                        avg_time = avg_row.get("avg_time")
+                        if avg_time and first_ts:
+                            avg_minutes = int(avg_time)
                             elapsed_seconds = now_ts - int(first_ts)
                             elapsed_minutes = elapsed_seconds // 60
                             timer_minutes = max(0, avg_minutes - elapsed_minutes)
                     elif machine_status == "DRYING":
+                        # 건조 중: avg_time 사용
                         avg_time = avg_row.get("avg_time")
                         if avg_time and first_ts:
                             avg_minutes = int(avg_time)
@@ -440,23 +439,21 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
         
         if status in {"WASHING", "SPINNING", "DRYING"} and course_name:
             if status == "SPINNING":
-                # 탈수 중
+                # 탈수 중: avg_spinning_time 사용
                 avg_minutes_val = course_spinning_map.get(course_name)
                 if avg_minutes_val and spinning_update:
                     elapsed_seconds = now_ts - int(spinning_update)
                     elapsed_minutes_val = elapsed_seconds // 60
                     timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
             elif status == "WASHING":
-                # 세탁 중
-                avg_minutes_val = course_washing_map.get(course_name)
-                if not avg_minutes_val:
-                    avg_minutes_val = course_avg_map.get(course_name)
+                # 세탁 중: avg_time 사용 (전체 코스 시간)
+                avg_minutes_val = course_avg_map.get(course_name)
                 if avg_minutes_val and first_ts:
                     elapsed_seconds = now_ts - int(first_ts)
                     elapsed_minutes_val = elapsed_seconds // 60
                     timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
             elif status == "DRYING":
-                # 건조 중
+                # 건조 중: avg_time 사용
                 avg_minutes_val = course_avg_map.get(course_name)
                 if avg_minutes_val and first_ts:
                     elapsed_seconds = now_ts - int(first_ts)
