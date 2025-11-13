@@ -35,6 +35,154 @@ from app.websocket.manager import manager
 
 router = APIRouter()
 
+
+# ===== /load 엔드포인트를 위한 비동기 헬퍼 함수들 =====
+
+async def _fetch_load_machines(user_id: int, role: str) -> list[dict]:
+    """Fetch machines data for /load endpoint."""
+    def _fetch():
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            query = """
+                SELECT m.machine_id,
+                       m.machine_uuid,
+                       m.room_id,
+                       COALESCE(rt.room_name, m.room_name) AS room_name,
+                       m.machine_name,
+                       m.status,
+                       m.machine_type,
+                       m.course_name,
+                       UNIX_TIMESTAMP(m.first_update) AS first_ts,
+                       m.spinning_update
+                FROM machine_table m
+                JOIN room_subscriptions rs ON m.room_id = rs.room_id
+                LEFT JOIN room_table rt ON m.room_id = rt.room_id
+                WHERE rs.user_id = %s
+            """
+            cursor.execute(query, (user_id,))
+            return cursor.fetchall() or []
+    
+    return await run_in_threadpool(_fetch)
+
+
+async def _fetch_load_course_avgs(course_names: set[str]) -> tuple[dict, dict, dict]:
+    """Fetch course average times."""
+    def _fetch():
+        if not course_names:
+            return {}, {}, {}
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            placeholders = ",".join(["%s"] * len(course_names))
+            cursor.execute(
+                f"SELECT course_name, avg_time, avg_washing_time, avg_spinning_time FROM time_table WHERE course_name IN ({placeholders})",
+                tuple(course_names),
+            )
+            
+            course_avg_map = {}
+            course_washing_map = {}
+            course_spinning_map = {}
+            
+            for row in cursor.fetchall() or []:
+                cn = row.get("course_name")
+                avg_time = row.get("avg_time")
+                avg_washing = row.get("avg_washing_time")
+                avg_spinning = row.get("avg_spinning_time")
+                
+                if cn and avg_time is not None:
+                    try:
+                        course_avg_map[cn] = int(avg_time)
+                    except Exception:
+                        pass
+                
+                if cn and avg_washing is not None:
+                    try:
+                        course_washing_map[cn] = int(avg_washing)
+                    except Exception:
+                        pass
+                
+                if cn and avg_spinning is not None:
+                    try:
+                        course_spinning_map[cn] = int(avg_spinning)
+                    except Exception:
+                        pass
+            
+            return course_avg_map, course_washing_map, course_spinning_map
+    
+    return await run_in_threadpool(_fetch)
+
+
+async def _fetch_load_notify_subs(user_id: int) -> set[str]:
+    """Fetch user's notify subscriptions."""
+    def _fetch():
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT machine_uuid FROM notify_subscriptions WHERE user_id = %s",
+                (user_id,),
+            )
+            rows = cursor.fetchall() or []
+            return {row["machine_uuid"] for row in rows}
+    
+    return await run_in_threadpool(_fetch)
+
+
+async def _fetch_load_user_reservation(user_id: int) -> int:
+    """Fetch user's reservation status."""
+    def _fetch():
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT MAX(isreserved) as max_reserved FROM reservation_table WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return int(row.get("max_reserved") or 0) if row else 0
+    
+    return await run_in_threadpool(_fetch)
+
+
+async def _fetch_load_room_stats(room_ids: set[int], now_ts: int) -> tuple[dict, dict, int]:
+    """Fetch room-level statistics (reservations, notifications, recent finished)."""
+    def _fetch():
+        if not room_ids:
+            return {}, {}, 0
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            placeholders = ",".join(["%s"] * len(room_ids))
+            
+            # Room reservations
+            cursor.execute(
+                f"SELECT room_id, COUNT(*) AS cnt FROM reservation_table WHERE room_id IN ({placeholders}) AND isreserved = 1 GROUP BY room_id",
+                tuple(room_ids),
+            )
+            room_reservation_counts = {int(rec.get("room_id")): int(rec.get("cnt") or 0) for rec in cursor.fetchall() or []}
+            
+            # Room notify counts
+            cursor.execute(
+                f"SELECT m.room_id, COUNT(*) AS cnt FROM notify_subscriptions ns JOIN machine_table m ON ns.machine_uuid = m.machine_uuid WHERE m.room_id IN ({placeholders}) GROUP BY m.room_id",
+                tuple(room_ids),
+            )
+            room_notify_counts = {int(rec.get("room_id")): int(rec.get("cnt") or 0) for rec in cursor.fetchall() or []}
+            
+            # Recent finished count
+            lookback_ts = now_ts - 1800
+            params = tuple(room_ids) + ("FINISHED", lookback_ts)
+            cursor.execute(
+                f"SELECT COUNT(*) AS cnt FROM machine_table WHERE room_id IN ({placeholders}) AND status = %s AND timestamp >= %s",
+                params,
+            )
+            row = cursor.fetchone()
+            recent_finished_count = int(row.get("cnt") or 0) if row else 0
+            
+            return room_reservation_counts, room_notify_counts, recent_finished_count
+    
+    return await run_in_threadpool(_fetch)
+
+
+# ===== /tip 엔드포인트를 위한 비동기 헬퍼 함수들 =====
+
 def role_to_str(val) -> str:
     try:
         return "ADMIN" if int(val) == 1 else "USER"
@@ -169,6 +317,7 @@ async def device_subscribe_post(body: DeviceSubscribeRequest, authorization: str
 
 @router.post("/load", response_model=LoadResponse)
 async def load(body: LoadRequest | None = None, authorization: str | None = Header(None)):
+    """Load machine data with async DB queries."""
     token = _resolve_token(authorization, getattr(body, "access_token", None) if body else None)
     try:
         user = get_current_user(token)
@@ -184,157 +333,17 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
     user_id = int(user["user_id"])
     now_ts = int(time.time())
 
-    rows: list[dict] = []
-    course_avg_map: dict[str, int] = {}
-    notify_set: set[str] = set()
-    isreserved = 0
-    room_reservation_counts: dict[int, int] = {}
-    room_notify_counts: dict[int, int] = {}
-    recent_finished_count = 0
-
-    with get_db_connection() as conn:
-        cursor = conn.cursor(dictionary=True)
-
-        if role_in_jwt == "ADMIN":
-            cursor.execute(
-                """
-                SELECT m.machine_id,
-                       m.machine_uuid,
-                       m.room_id,
-                       COALESCE(rt.room_name, m.room_name) AS room_name,
-                       m.machine_name,
-                       m.status,
-                       m.machine_type,
-                       m.course_name,
-                       UNIX_TIMESTAMP(m.first_update) AS first_ts,
-                       m.spinning_update
-                FROM machine_table m
-                JOIN room_subscriptions rs ON m.room_id = rs.room_id
-                LEFT JOIN room_table rt ON m.room_id = rt.room_id
-                WHERE rs.user_id = %s
-                """,
-                (user_id,),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT m.machine_id,
-                       m.machine_uuid,
-                       m.room_id,
-                       COALESCE(rt.room_name, m.room_name) AS room_name,
-                       m.machine_name,
-                       m.status,
-                       m.machine_type,
-                       m.course_name,
-                       UNIX_TIMESTAMP(m.first_update) AS first_ts,
-                       m.spinning_update
-                FROM machine_table m
-                JOIN room_subscriptions rs ON m.room_id = rs.room_id
-                LEFT JOIN room_table rt ON m.room_id = rt.room_id
-                WHERE rs.user_id = %s
-                """,
-                (user_id,),
-            )
-        rows = cursor.fetchall() or []
-
-        course_names = {row.get("course_name") for row in rows if row.get("course_name")}
-        course_washing_map: dict[str, int] = {}
-        course_spinning_map: dict[str, int] = {}
-        if course_names:
-            placeholders = ",".join(["%s"] * len(course_names))
-            cursor.execute(
-                f"SELECT course_name, avg_time, avg_washing_time, avg_spinning_time FROM time_table WHERE course_name IN ({placeholders})",
-                tuple(course_names),
-            )
-            for course_row in cursor.fetchall() or []:
-                course_name = course_row.get("course_name")
-                avg_time_val = course_row.get("avg_time")
-                avg_washing_val = course_row.get("avg_washing_time")
-                avg_spinning_val = course_row.get("avg_spinning_time")
-                
-                if course_name and avg_time_val is not None:
-                    try:
-                        course_avg_map[course_name] = int(avg_time_val)
-                    except Exception:
-                        logger.warning(
-                            "load: avg_time parsing failed for course=%s value=%s",
-                            course_name,
-                            avg_time_val,
-                        )
-                
-                if course_name and avg_washing_val is not None:
-                    try:
-                        course_washing_map[course_name] = int(avg_washing_val)
-                    except Exception:
-                        pass
-                
-                if course_name and avg_spinning_val is not None:
-                    try:
-                        course_spinning_map[course_name] = int(avg_spinning_val)
-                    except Exception:
-                        pass
-
-        cursor.execute(
-            "SELECT machine_uuid FROM notify_subscriptions WHERE user_id = %s",
-            (user_id,),
-        )
-        notify_rows = cursor.fetchall() or []
-        notify_set = {row["machine_uuid"] for row in notify_rows}
-
-        cursor.execute(
-            """
-            SELECT MAX(isreserved) as max_reserved
-            FROM reservation_table
-            WHERE user_id = %s
-            """,
-            (user_id,),
-        )
-        reserve_row = cursor.fetchone()
-        isreserved = int(reserve_row.get("max_reserved") or 0) if reserve_row else 0
-
-        room_ids = {int(row["room_id"]) for row in rows if row.get("room_id") is not None}
-        if room_ids:
-            placeholders_rooms = ",".join(["%s"] * len(room_ids))
-
-            cursor.execute(
-                f"""
-                SELECT room_id, COUNT(*) AS cnt
-                FROM reservation_table
-                WHERE room_id IN ({placeholders_rooms}) AND isreserved = 1
-                GROUP BY room_id
-                """,
-                tuple(room_ids),
-            )
-            for rec in cursor.fetchall() or []:
-                room_reservation_counts[int(rec.get("room_id"))] = int(rec.get("cnt") or 0)
-
-            cursor.execute(
-                f"""
-                SELECT m.room_id, COUNT(*) AS cnt
-                FROM notify_subscriptions ns
-                JOIN machine_table m ON ns.machine_uuid = m.machine_uuid
-                WHERE m.room_id IN ({placeholders_rooms})
-                GROUP BY m.room_id
-                """,
-                tuple(room_ids),
-            )
-            for rec in cursor.fetchall() or []:
-                room_notify_counts[int(rec.get("room_id"))] = int(rec.get("cnt") or 0)
-
-            lookback_ts = now_ts - 1800  # 30분 내 FINISHED 장비 수
-            params = tuple(room_ids) + ("FINISHED", lookback_ts)
-            cursor.execute(
-                f"""
-                SELECT COUNT(*) AS cnt
-                FROM machine_table
-                WHERE room_id IN ({placeholders_rooms})
-                    AND status = %s
-                    AND timestamp >= %s
-                """,
-                params,
-            )
-            finished_row = cursor.fetchone()
-            recent_finished_count = int(finished_row.get("cnt") or 0) if finished_row else 0
+    # 순차 비동기 데이터 조회
+    rows = await _fetch_load_machines(user_id, role_in_jwt)
+    
+    course_names = {row.get("course_name") for row in rows if row.get("course_name")}
+    course_avg_map, course_washing_map, course_spinning_map = await _fetch_load_course_avgs(course_names)
+    
+    notify_set = await _fetch_load_notify_subs(user_id)
+    isreserved = await _fetch_load_user_reservation(user_id)
+    
+    room_ids = {int(row["room_id"]) for row in rows if row.get("room_id") is not None}
+    room_reservation_counts, room_notify_counts, recent_finished_count = await _fetch_load_room_stats(room_ids, now_ts)
 
     machines: list[MachineItem] = []
     room_stats: dict[int, dict] = defaultdict(lambda: {
