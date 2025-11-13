@@ -206,7 +206,8 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                        m.status,
                        m.machine_type,
                        m.course_name,
-                       UNIX_TIMESTAMP(m.first_update) AS first_ts
+                       UNIX_TIMESTAMP(m.first_update) AS first_ts,
+                       m.spinning_update
                 FROM machine_table m
                 JOIN room_subscriptions rs ON m.room_id = rs.room_id
                 LEFT JOIN room_table rt ON m.room_id = rt.room_id
@@ -225,7 +226,8 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                        m.status,
                        m.machine_type,
                        m.course_name,
-                       UNIX_TIMESTAMP(m.first_update) AS first_ts
+                       UNIX_TIMESTAMP(m.first_update) AS first_ts,
+                       m.spinning_update
                 FROM machine_table m
                 JOIN room_subscriptions rs ON m.room_id = rs.room_id
                 LEFT JOIN room_table rt ON m.room_id = rt.room_id
@@ -236,15 +238,20 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         rows = cursor.fetchall() or []
 
         course_names = {row.get("course_name") for row in rows if row.get("course_name")}
+        course_washing_map: dict[str, int] = {}
+        course_spinning_map: dict[str, int] = {}
         if course_names:
             placeholders = ",".join(["%s"] * len(course_names))
             cursor.execute(
-                f"SELECT course_name, avg_time FROM time_table WHERE course_name IN ({placeholders})",
+                f"SELECT course_name, avg_time, avg_washing_time, avg_spinning_time FROM time_table WHERE course_name IN ({placeholders})",
                 tuple(course_names),
             )
             for course_row in cursor.fetchall() or []:
                 course_name = course_row.get("course_name")
                 avg_time_val = course_row.get("avg_time")
+                avg_washing_val = course_row.get("avg_washing_time")
+                avg_spinning_val = course_row.get("avg_spinning_time")
+                
                 if course_name and avg_time_val is not None:
                     try:
                         course_avg_map[course_name] = int(avg_time_val)
@@ -254,6 +261,18 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                             course_name,
                             avg_time_val,
                         )
+                
+                if course_name and avg_washing_val is not None:
+                    try:
+                        course_washing_map[course_name] = int(avg_washing_val)
+                    except Exception:
+                        pass
+                
+                if course_name and avg_spinning_val is not None:
+                    try:
+                        course_spinning_map[course_name] = int(avg_spinning_val)
+                    except Exception:
+                        pass
 
         cursor.execute(
             "SELECT machine_uuid FROM notify_subscriptions WHERE user_id = %s",
@@ -331,6 +350,7 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         status = (r.get("status") or "").upper()
         course_name = r.get("course_name")
         first_ts_val = r.get("first_ts")
+        spinning_update = r.get("spinning_update")
         first_ts_int = None
         if first_ts_val is not None:
             try:
@@ -339,11 +359,30 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 logger.warning("load: invalid first_ts value=%s for machine_id=%s", first_ts_val, r.get("machine_id"))
 
         timer_val: int | None = None
+        avg_minutes_val: int | None = None
+        elapsed_minutes_val: int | None = None
+        
         if status in busy_statuses and course_name:
-            avg_minutes = course_avg_map.get(course_name)
-            timer_val, negative = compute_remaining_minutes(first_ts_int, avg_minutes, now_ts)
-            if negative:
-                timer_val = None
+            if status == "SPINNING":
+                # 탈수 중: spinning_update부터 경과 시간 계산
+                avg_minutes_val = course_spinning_map.get(course_name)
+                if spinning_update and avg_minutes_val:
+                    elapsed_seconds = now_ts - int(spinning_update)
+                    elapsed_minutes_val = elapsed_seconds // 60
+                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+            else:
+                # WASHING 또는 DRYING: first_update부터 경과 시간 계산
+                if status == "WASHING":
+                    avg_minutes_val = course_washing_map.get(course_name)
+                    if avg_minutes_val is None:
+                        avg_minutes_val = course_avg_map.get(course_name)
+                else:  # DRYING
+                    avg_minutes_val = course_avg_map.get(course_name)
+                
+                if first_ts_int and avg_minutes_val:
+                    elapsed_seconds = now_ts - first_ts_int
+                    elapsed_minutes_val = elapsed_seconds // 60
+                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
 
         machines.append(
             MachineItem(
@@ -354,6 +393,8 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 machine_type=r.get("machine_type") or "washer",
                 isusing=1 if r.get("machine_uuid") in notify_set else 0,
                 timer=timer_val,
+                avg_minutes=avg_minutes_val,
+                elapsed_time_minutes=elapsed_minutes_val,
             )
         )
 
