@@ -14,7 +14,7 @@ from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
 )
 from app.database import get_db_connection
-from app.services.ai_summary import get_cached_tip_immediate, is_cache_stale, refresh_tips_background
+from app.services.ai_summary import generate_summary
 from app.services.kma_weather import fetch_kma_weather
 from app.utils.timer import compute_remaining_minutes
 from app.web_service.schemas import (
@@ -753,31 +753,19 @@ async def get_tip(authorization: str | None = Header(None)):
         alerts=alerts,
     )
 
-    # 즉시 캐시된 tip 반환
-    cached_tip = await run_in_threadpool(get_cached_tip_immediate)
+    # Generate AI tip (비동기 처리)
+    tip_message = None
+    try:
+        status_dict = status_context.model_dump()
+        status_dict["congestion_stats"] = congestion_stats
+        tip_message = await run_in_threadpool(generate_summary, status_dict)
+    except Exception as exc:
+        logger.warning(f"AI tip generation failed: {exc}")
     
-    if cached_tip:
-        # 캐시가 있으면 즉시 반환
-        logger.info("[Tip] Returning cached tip immediately")
-        
-        # 캐시가 30분 이상 오래되었는지 확인하고, 오래되었으면 백그라운드에서 갱신
-        cache_stale = await run_in_threadpool(is_cache_stale)
-        if cache_stale:
-            logger.info("[Tip] Cache is stale, triggering background refresh")
-            status_dict = status_context.model_dump()
-            status_dict["congestion_stats"] = congestion_stats
-            # 백그라운드에서 비동기로 실행 (fire-and-forget)
-            run_in_threadpool(refresh_tips_background, status_dict)
-        
-        return TipResponse(tip_message=cached_tip)
+    if not tip_message:
+        tip_message = "세탁실 정보를 불러올 수 없습니다."
     
-    # 캐시가 없으면 백그라운드에서 생성하고 기본 메시지 반환
-    logger.info("[Tip] No cache available, generating in background")
-    status_dict = status_context.model_dump()
-    status_dict["congestion_stats"] = congestion_stats
-    run_in_threadpool(refresh_tips_background, status_dict)
-    
-    return TipResponse(tip_message="세탁실 혼잡도 분석 중입니다. 잠시 후 다시 확인해주세요! 🔄")
+    return TipResponse(tip_message=tip_message)
 
 
 @router.post("/reserve")
