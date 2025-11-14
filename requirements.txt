@@ -18,6 +18,7 @@ pytz
 PyYAML
 requests
 holidays
+google-genai
 sniffio
 starlette
 typing-inspection
@@ -26,3 +27,4 @@ uvicorn
 watchfiles
 websockets
 win32_setctime
+openai

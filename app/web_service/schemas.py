@@ -96,8 +96,11 @@ class MachineItem(BaseModel):
     room_name: str
     machine_name: str
     status: str
+    machine_type: str  # "washer" or "dryer"
     isusing: int  # 0: 알림 미등록, 1: 알림 등록됨
     timer: int | None = None  # 남은 시간(분)
+    avg_minutes: int | None = None  # 전체 코스 예상 시간(분)
+    elapsed_time_minutes: int | None = None  # 경과 시간(분)
 
 
 class LoadResponse(BaseModel):
@@ -165,3 +168,7 @@ class StartCourseRequest(BaseModel):
 
 class StartCourseResponse(BaseModel):
     timer: int | None  # 남은 시간 (분)
+
+
+class TipResponse(BaseModel):
+    tip_message: str

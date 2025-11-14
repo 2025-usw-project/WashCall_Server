@@ -24,7 +24,7 @@ def issue_jwt(user_id: int, role: str) -> str:
         "sub": str(user_id),
         "role": role,
         "iat": now,
-        "exp": now + 60 * 60 * 24 * 7,  # 1 week expiration
+        "exp": now + 60 * 60 * 24 * 30,  # 1 month expiration
         "jti": f"{user_id}-{now}",
     }
     return jwt.encode(payload, SECRET, algorithm=ALGORITHM)

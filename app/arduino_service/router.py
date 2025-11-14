@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from .schemas import UpdateData, DeviceUpdateRequest, DeviceUpdateResponse
+from .schemas import UpdateData, DeviceUpdateRequest, DeviceUpdateResponse, RawDataRequest, RawDataResponse
 from app.database import get_db_connection
 from app.websocket.manager import broadcast_room_status, broadcast_notify
 from datetime import datetime, timedelta
@@ -63,7 +63,7 @@ def calculate_and_update_thresholds(cursor, machine_uuid: int):
         
         logger.info(f"기준점 계산 결과: {result}")
         
-        # ✅ dict 키로 접근
+        # dict 키로 접근
         if result and result.get('record_count') and result['record_count'] > 0:
             avg_wash_avg = result['avg_wash_avg']
             avg_wash_max = result['avg_wash_max']
@@ -143,226 +143,39 @@ def update_congestion_for_range(cursor, start_timestamp: int, end_timestamp: int
 
 def update_course_avg_time(cursor, course_name: str, elapsed_time: int):
     """
-    코스별 평균 소요 시간 업데이트 (🔥 이상치 필터링 적용)
-    ✅ elapsed_time은 초 단위로 입력받음
-    ✅ 분 단위로 변환해서 저장
-    ✅ 기존 평균의 ±50% 범위를 벗어나는 이상치 데이터 필터링
+    코스별 평균 소요 시간 (time_table 업데이트 중지, 기존 값만 사용)
+    count_avg는 항상 1로 유지
     """
-    
-    # ✅ 음수/0 필터링
-    if elapsed_time <= 0:
-        logger.warning(f"⚠️ 유효하지 않은 시간({elapsed_time}초), 기록 안함")
-        return
-    
-    # ✅ 초를 분으로 변환 (핵심!)
-    elapsed_time_minutes = elapsed_time // 60  # 정수 나눗셈으로 분 계산
-    logger.info(f"⏱️ 시간 변환: {elapsed_time}초 → {elapsed_time_minutes}분")
-    
-    try:
-        # 1단계: time_table에서 해당 코스 조회
-        query_select = """
-        SELECT avg_time, count_avg
-        FROM time_table
-        WHERE course_name = %s
-        """
-        cursor.execute(query_select, (course_name,))
-        result = cursor.fetchone()
-        
-        if result is None:
-            # 처음인 경우: 새로운 레코드 삽입 (분 단위)
-            query_insert = """
-            INSERT INTO time_table (course_name, avg_time, count_avg)
-            VALUES (%s, %s, %s)
-            """
-            # ✅ elapsed_time_minutes를 저장!
-            cursor.execute(query_insert, (course_name, elapsed_time_minutes, 1))
-            logger.info(f"✅ 새로운 코스 기록: {course_name} = {elapsed_time_minutes}분")
-            return
-        
-        # ✅ 딕셔너리 또는 튜플 모두 지원
-        if isinstance(result, dict):
-            existing_avg = result.get("avg_time")
-            existing_count = result.get("count_avg")
-        else:
-            existing_avg = result[0]
-            existing_count = result[1]
-        
-        # NULL 체크
-        if existing_avg is None or existing_count is None or existing_count == 0:
-            logger.warning(f"NULL/0 값 감지: avg={existing_avg}, count={existing_count}")
-            # 처음이거나 잘못된 상태 → 새로 기록
-            query_insert = """
-            INSERT INTO time_table (course_name, avg_time, count_avg)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                avg_time = VALUES(avg_time),
-                count_avg = VALUES(count_avg)
-            """
-            # ✅ elapsed_time_minutes를 저장!
-            cursor.execute(query_insert, (course_name, elapsed_time_minutes, 1))
-            logger.info(f"✅ 코스 '{course_name}' 새로 기록: {elapsed_time_minutes}분")
-            return
-        
-        # ========== 🔥 이상치 필터링 로직 (핵심!) ==========
-        # 기존 평균의 ±50% 범위 계산
-        lower_bound = existing_avg * 0.5  # 하한선: 평균의 50%
-        upper_bound = existing_avg * 1.5  # 상한선: 평균의 150%
-        
-        logger.info(f"📊 이상치 필터 범위: {lower_bound:.1f}분 ~ {upper_bound:.1f}분")
-        logger.info(f"📊 현재 데이터: {elapsed_time_minutes}분 (기존 평균: {existing_avg}분)")
-        
-        # 이상치 검사
-        if elapsed_time_minutes < lower_bound or elapsed_time_minutes > upper_bound:
-            logger.warning(f"⚠️ 이상치 감지! {elapsed_time_minutes}분은 범위 [{lower_bound:.1f}, {upper_bound:.1f}]를 벗어남")
-            logger.warning(f"⚠️ 코스 '{course_name}'의 평균 시간 업데이트를 건너뜀 (데이터 오염 방지)")
-            logger.info(f"   - 기존 평균: {existing_avg}분 (횟수: {existing_count})")
-            logger.info(f"   - 거부된 값: {elapsed_time_minutes}분")
-            return  # 이상치는 평균 계산에 포함하지 않음
-        
-        logger.info(f"✅ 정상 데이터 확인: {elapsed_time_minutes}분은 유효 범위 내")
-        # ====================================================
-        
-        # 새로운 평균 계산 (분 단위)
-        new_total_time = (existing_avg * existing_count) + elapsed_time_minutes  # ✅ 분 단위!
-        new_count = existing_count + 1
-        new_avg = int(new_total_time / new_count)
-        
-        logger.info(f"코스 '{course_name}' 평균 시간 계산:")
-        logger.info(f"  기존: {existing_avg}분 (횟수: {existing_count})")
-        logger.info(f"  새로운: {elapsed_time_minutes}분")
-        logger.info(f"  업데이트된 평균: {new_avg}분 (횟수: {new_count})")
-        
-        # 업데이트 (분 단위)
-        query_update = """
-        UPDATE time_table
-        SET avg_time = %s, count_avg = %s
-        WHERE course_name = %s
-        """
-        cursor.execute(query_update, (new_avg, new_count, course_name))
-        logger.info(f"✅ 코스 '{course_name}' 평균 시간 업데이트: {new_avg}분")
-        
-    except Exception as e:
-        logger.error(f"코스 평균 시간 업데이트 실패: {str(e)}", exc_info=True)
-        raise
+    logger.info(f"[time_table 업데이트 중지] 코스 '{course_name}' 기존 값 사용, elapsed_time={elapsed_time}초는 무시")
+    return
 
 
 def update_segment_avg_time(cursor, course_name: str, elapsed_minutes: int, field_name: str):
     """
-    특정 구간의 평균 시간 업데이트
-    
-    Parameters:
-    - course_name: 코스 이름 (예: '표준', '쾌속')
-    - elapsed_minutes: 경과 시간 (분 단위)
-    - field_name: 'avg_washing_time' 또는 'avg_spinning_time'
-    
-    🔥 이상치 필터링: 기존 평균의 ±50% 범위만 수락
+    특정 구간의 평균 시간 (time_table 업데이트 중지, 기존 값만 사용)
+    count_avg는 항상 1로 유지
     """
-    
-    # ✅ 음수 또는 0 필터링
-    if elapsed_minutes <= 0:
-        logger.warning(f"⚠️ {field_name}: 유효하지 않은 시간({elapsed_minutes}분), 기록 안함")
-        return
-    
-    try:
-        # 1단계: time_table에서 해당 필드 조회
-        query_select = f"""
-            SELECT {field_name}, count_avg
-            FROM time_table
-            WHERE course_name = %s
-        """
-        
-        cursor.execute(query_select, (course_name,))
-        result = cursor.fetchone()
-        
-        if result is None:
-            # 처음인 경우: 새로운 레코드 삽입
-            query_insert = f"""
-                INSERT INTO time_table (course_name, {field_name}, count_avg)
-                VALUES (%s, %s, 1)
-                ON DUPLICATE KEY UPDATE
-                {field_name} = VALUES({field_name}),
-                count_avg = VALUES(count_avg)
-            """
-            cursor.execute(query_insert, (course_name, elapsed_minutes))
-            logger.info(f"✅ 새로운 코스 '{course_name}' {field_name} 기록: {elapsed_minutes}분")
-            return
-        
-        # ✅ 딕셔너리 또는 튜플 모두 지원
-        if isinstance(result, dict):
-            existing_avg = result.get(field_name)
-            existing_count = result.get("count_avg")
-        else:
-            existing_avg = result[0]
-            existing_count = result[1]
-        
-        # ✅ NULL 체크
-        if existing_avg is None or existing_count is None or existing_count == 0:
-            logger.warning(f"⚠️ {field_name} NULL/0 값 감지: avg={existing_avg}, count={existing_count}")
-            query_insert = f"""
-                INSERT INTO time_table (course_name, {field_name}, count_avg)
-                VALUES (%s, %s, 1)
-                ON DUPLICATE KEY UPDATE
-                {field_name} = VALUES({field_name}),
-                count_avg = VALUES(count_avg)
-            """
-            cursor.execute(query_insert, (course_name, elapsed_minutes))
-            logger.info(f"✅ 코스 '{course_name}' {field_name} 새로 기록: {elapsed_minutes}분")
-            return
-        
-        # ========== 🔥 이상치 필터링 로직 ==========
-        # 기존 평균의 ±50% 범위 계산
-        lower_bound = existing_avg * 0.5
-        upper_bound = existing_avg * 1.5
-        
-        logger.info(f"📊 {field_name} 필터 범위: {lower_bound:.1f}분 ~ {upper_bound:.1f}분")
-        logger.info(f"📊 현재 데이터: {elapsed_minutes}분 (기존 평균: {existing_avg}분)")
-        
-        # 이상치 검사
-        if elapsed_minutes < lower_bound or elapsed_minutes > upper_bound:
-            logger.warning(f"⚠️ {field_name} 이상치 감지! {elapsed_minutes}분은 범위 [{lower_bound:.1f}, {upper_bound:.1f}]를 벗어남")
-            logger.info(f"   - 기존 평균: {existing_avg}분 (횟수: {existing_count})")
-            logger.info(f"   - 거부된 값: {elapsed_minutes}분")
-            return
-        
-        logger.info(f"✅ {field_name} 정상 데이터 확인: {elapsed_minutes}분은 유효 범위 내")
-        
-        # ====================================================
-        
-        # 새로운 평균 계산
-        new_total_time = (existing_avg * existing_count) + elapsed_minutes
-        new_count = existing_count + 1
-        new_avg = int(new_total_time / new_count)
-        
-        logger.info(f"코스 '{course_name}' {field_name} 계산:")
-        logger.info(f" 기존: {existing_avg}분 (횟수: {existing_count})")
-        logger.info(f" 새로운: {elapsed_minutes}분")
-        logger.info(f" 업데이트된 평균: {new_avg}분 (횟수: {new_count})")
-        
-        # 업데이트
-        query_update = f"""
-            UPDATE time_table
-            SET {field_name} = %s, count_avg = %s
-            WHERE course_name = %s
-        """
-        cursor.execute(query_update, (new_avg, new_count, course_name))
-        logger.info(f"✅ 코스 '{course_name}' {field_name} 업데이트: {new_avg}분")
-        
-    except Exception as e:
-        logger.error(f"{field_name} 업데이트 실패: {str(e)}", exc_info=True)
-        raise
+    logger.info(f"[time_table 업데이트 중지] 코스 '{course_name}' {field_name} 기존 값 사용, elapsed={elapsed_minutes}분은 무시")
+    return
 
 
 @router.post("/update")
 async def update(data: UpdateData):
     """
     Arduino 상태 업데이트 처리
-    ✅ first_update가 NULL일 때 감지
-    ✅ elapsed_time 음수 필터링
-    ✅ count_avg = 0 문제 해결
+    first_update가 NULL일 때 감지
+    elapsed_time 음수 필터링
+    count_avg = 0 문제 해결
     """
     try:
         # ===== 1단계: 입력값 검증 =====
-        logger.info(f"UPDATE 요청 수신: machine_id={data.machine_id}, status={data.status}")
+        logger.info(f"UPDATE 요청 수신: machine_id={data.machine_id}, status={data.status}, machine_type={data.machine_type}")
+        
+        # 건조기(dryer)일 때 WASHING/SPINNING을 DRYING으로 변환
+        actual_status = data.status
+        if data.machine_type.lower() == "dryer" and data.status in ("WASHING", "SPINNING"):
+            actual_status = "DRYING"
+            logger.info(f"건조기 감지: {data.status} → DRYING 변환")
         
         if data.timestamp is None:
             logger.error("timestamp가 None입니다")
@@ -401,9 +214,9 @@ async def update(data: UpdateData):
                 logger.error(f"DB 조회 중 오류: {str(e)}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"DB 조회 실패: {str(e)}")
             
-            # ===== 3단계: FINISHED → WASHING 전환 감지 =====
-            if current_status == "FINISHED" and data.status == "WASHING":
-                logger.info("✅ FINISHED → WASHING 전환 감지! first_update 기록")
+            # ===== 3단계: FINISHED → WASHING/DRYING 전환 감지 =====
+            if current_status == "FINISHED" and actual_status in ("WASHING", "DRYING"):
+                logger.info(f"FINISHED → {actual_status} 전환 감지! first_update 기록")
                 
                 try:
                     first_update_query = """
@@ -418,22 +231,23 @@ async def update(data: UpdateData):
                     
             # ===== 3-1단계: WASHING → SPINNING 전환 감지 (새로 추가!) =====
             if current_status == "WASHING" and data.status == "SPINNING":
-                logger.info("✅ WASHING → SPINNING 전환 감지! spinning_update 기록")
+                logger.info("WASHING → SPINNING 전환 감지! spinning_update 기록 + spin_count 증가")
                 
                 try:
-                    # spinning_update 기록
+                    # spinning_update 기록 + spin_count 증가
                     spinning_update_query = """
                         UPDATE machine_table
-                        SET spinning_update = %s
+                        SET spinning_update = %s,
+                            spin_count = spin_count + 1
                         WHERE machine_id = %s
                     """
                     cursor.execute(spinning_update_query, (data.timestamp, data.machine_id))
-                    logger.info(f"spinning_update 기록 완료: {data.timestamp}")
+                    logger.info(f"spinning_update 기록 완료: {data.timestamp}, spin_count 증가")
                     
                 except Exception as e:
                     logger.error(f"spinning_update 기록 실패: {str(e)}", exc_info=True)
                 
-                # 🔥 세탁 시간 계산 및 기록
+                # 세탁 시간 계산 및 기록
                 try:
                     cursor.execute(
                         """
@@ -458,52 +272,66 @@ async def update(data: UpdateData):
                             washing_time_minutes = washing_time_seconds // 60
                             logger.info(f"세탁 시간 계산: {data.timestamp} - {first_timestamp} = {washing_time_seconds}초 = {washing_time_minutes}분")
                             update_segment_avg_time(cursor, course_name, washing_time_minutes, "avg_washing_time")
-                            logger.info(f"✅ 세탁 시간 업데이트 완료")
+                            logger.info("세탁 시간 업데이트 완료")
                         else:
-                            logger.warning(f"⚠️ 세탁 시간 계산 실패: washing_time={washing_time_seconds}초, course_name={course_name}")
+                            logger.warning(f"세탁 시간 계산 실패: washing_time={washing_time_seconds}초, course_name={course_name}")
                 
                 except Exception as e:
                     logger.error(f"세탁 시간 계산 실패: {str(e)}", exc_info=True)
+                    
+                # ===== 3-2단계: SPINNING → FINISHED 전환 감지 + 알림 발송 ===== ⭐ 수정!
+            if current_status == "SPINNING" and data.status == "FINISHED":
+                logger.info("✅ 상태 전환 감지: SPINNING → FINISHED")
+                logger.info(f"📍 DB 확인: machine_id {data.machine_id}가 SPINNING에서 FINISHED로 변경")
+                logger.info(f"⏳ 탈수 완료 감지! 알림 발송 중...")
+                
+                # ⭐ 여기서 알림 발송!
+                try:
+                    await broadcast_room_status(data.machine_id, "FINISHED")
+                    await broadcast_notify(data.machine_id, "FINISHED")
+                    logger.info("🔔 탈수 완료 알림 발송 완료")
+                except Exception as e:
+                    logger.error(f"탈수 완료 알림 발송 실패: {str(e)}", exc_info=True)
                         
             # ===== 4단계: machine_table 상태 업데이트 =====
             try:
-                if data.status in ("WASHING", "SPINNING", "FINISHED"):
-                    logger.info(f"상태 업데이트 시작: {data.status}")
+                if actual_status in ("WASHING", "SPINNING", "DRYING", "FINISHED"):
+                    logger.info(f"상태 업데이트 시작: {actual_status} (machine_type={data.machine_type})")
                     
-                    if data.status == "FINISHED":
-                        logger.info("✅ FINISHED 상태: last_update 갱신")
+                    if actual_status == "FINISHED":
+                        logger.info("FINISHED 상태: last_update 갱신 + course_name 초기화 + spin_count 0으로 리셋")
                         current_time_int = int(datetime.now(KST).timestamp())
                         logger.info(f"현재 시간 (timestamp): {current_time_int}")
                         
                         if data.battery is not None:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, battery=%s, timestamp=%s, last_update=%s
+                            SET status=%s, machine_type=%s, battery=%s, timestamp=%s, last_update=%s, course_name=NULL, spin_count=0
                             WHERE machine_id=%s
                             """
-                            cursor.execute(query, (data.status, data.battery, data.timestamp, current_time_int, data.machine_id))
+                            cursor.execute(query, (actual_status, data.machine_type.lower(), data.battery, data.timestamp, current_time_int, data.machine_id))
                         else:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, timestamp=%s, last_update=%s
+                            SET status=%s, machine_type=%s, timestamp=%s, last_update=%s, course_name=NULL, spin_count=0
                             WHERE machine_id=%s
                             """
-                            cursor.execute(query, (data.status, data.timestamp, current_time_int, data.machine_id))
+                            cursor.execute(query, (actual_status, data.machine_type.lower(), data.timestamp, current_time_int, data.machine_id))
                     else:
                         if data.battery is not None:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, battery=%s, timestamp=%s
+                            SET status=%s, machine_type=%s, battery=%s, timestamp=%s
                             WHERE machine_id=%s
                             """
-                            cursor.execute(query, (data.status, data.battery, data.timestamp, data.machine_id))
+                            cursor.execute(query, (actual_status, data.machine_type.lower(), data.battery, data.timestamp, data.machine_id))
                         else:
                             query = """
                             UPDATE machine_table
-                            SET status=%s, timestamp=%s
+                            SET status=%s, machine_type=%s, timestamp=%s
                             WHERE machine_id=%s
                             """
-                            cursor.execute(query, (data.status, data.timestamp, data.machine_id))
+                            cursor.execute(query, (actual_status, data.machine_type.lower(), data.timestamp, data.machine_id))
                     
                     rows_affected = cursor.rowcount
                     logger.info(f"상태 UPDATE 완료: {rows_affected}행 영향")
@@ -518,7 +346,7 @@ async def update(data: UpdateData):
                 try:
                     logger.info("FINISHED 상태: 추가 처리 시작")
                     
-                    # ✅ SELECT에서 UNIX_TIMESTAMP 사용
+                    # SELECT에서 UNIX_TIMESTAMP 사용
                     cursor.execute(
                         """
                         SELECT 
@@ -545,7 +373,7 @@ async def update(data: UpdateData):
                     
                     logger.info(f"코스명: {course_name}")
                     logger.info(f"first_timestamp (세탁 시작): {first_timestamp}")
-                    logger.info(f"spinning_update (탈수 시작): {spinning_update}")  # 🔥 새로 추가
+                    logger.info(f"spinning_update (탈수 시작): {spinning_update}")  # 
                     logger.info(f"last_timestamp (종료): {last_timestamp}")
                     
                     if (spinning_update is not None and 
@@ -558,46 +386,47 @@ async def update(data: UpdateData):
                             spinning_time_minutes = spinning_time_seconds // 60
                             logger.info(f"탈수 시간 계산: {last_timestamp} - {spinning_update} = {spinning_time_seconds}초 = {spinning_time_minutes}분")
                             update_segment_avg_time(cursor, course_name, spinning_time_minutes, "avg_spinning_time")
-                            logger.info(f"✅ 탈수 시간 기록 완료")
+                            logger.info("탈수 시간 기록 완료")
                         else:
-                            logger.warning(f"⚠️ 탈수 시간 계산 실패: spinning_time={spinning_time_seconds}초")
+                            logger.warning("탈수 시간 계산 실패")
                     else:
-                        logger.warning(f"⚠️ 탈수 시간 계산 필수 데이터 누락 (스킵)")
+                        logger.warning("탈수 시간 계산 필수 데이터 누락 (스킵)")
                         logger.warning(f"   spinning_update={spinning_update}, last_timestamp={last_timestamp}, course_name={course_name}")
                     
-                    # ✅ 강화된 유효성 검사
+                    # 강화된 유효성 검사
                     if (first_timestamp is not None and 
                         last_timestamp is not None and 
                         course_name is not None and
                         isinstance(first_timestamp, (int, float)) and
-                        isinstance(last_timestamp, (int, float))):
+                        isinstance(last_timestamp, (int, float)) and
+                        (int(last_timestamp) - int(first_timestamp)) > 0):  # 
                         try:
-                            # ✅ 소요 시간 계산
+                            # 소요 시간 계산
                             elapsed_time = int(last_timestamp) - int(first_timestamp)
                             
                             logger.info(f"elapsed_time: {int(last_timestamp)} - {int(first_timestamp)} = {elapsed_time}초")
                             
-                            # ✅ 음수 체크 (가장 중요!)
+                            # 음수 체크 (가장 중요!)
                             if elapsed_time < 0:
-                                logger.error(f"❌ 음수 시간 발생: {elapsed_time}초")
+                                logger.error(f"음수 시간 발생: {elapsed_time}초")
                                 logger.error(f"   first_ts: {first_timestamp} ({datetime.fromtimestamp(first_timestamp, tz=pytz.UTC).astimezone(KST) if first_timestamp else 'N/A'})")
                                 logger.error(f"   last_ts: {last_timestamp} ({datetime.fromtimestamp(last_timestamp, tz=pytz.UTC).astimezone(KST) if last_timestamp else 'N/A'})")
-                                logger.warning("⚠️ 음수 시간이므로 코스 시간 기록 스킵")
+                                logger.warning("음수 시간이므로 코스 시간 기록 스킵")
                                 elapsed_time = None
                             
                             elif elapsed_time == 0:
-                                logger.warning("⚠️ 0초 감지, 기록하지 않음")
+                                logger.warning("0초 감지, 기록하지 않음")
                                 elapsed_time = None
                             
                             else:
-                                logger.info(f"✅ 유효한 시간: {elapsed_time}초 ({elapsed_time // 60}분 {elapsed_time % 60}초)")
+                                logger.info("유효한 시간: {}초 ({elapsed_time // 60}분 {elapsed_time % 60}초)")
                             
-                            # ✅ 유효한 시간만 기록 (함수 내에서도 체크!)
+                            # 유효한 시간만 기록 (함수 내에서도 체크!)
                             if elapsed_time is not None and elapsed_time > 0:
                                 update_course_avg_time(cursor, course_name, elapsed_time)
-                                logger.info(f"✅ {course_name} 평균 시간 업데이트 완료")
+                                logger.info("코스 시간 기록 완료")
                             else:
-                                logger.warning(f"⚠️ 코스 시간 기록 스킵: elapsed_time={elapsed_time}")
+                                logger.warning(f"코스 시간 기록 스킵: elapsed_time={elapsed_time}")
                         
                         except Exception as e:
                             logger.error(f"코스별 시간 계산 중 오류: {str(e)}", exc_info=True)
@@ -632,12 +461,12 @@ async def update(data: UpdateData):
                     except Exception as e:
                         logger.error(f"기준점 계산 실패: {str(e)}", exc_info=True)
                     
-                    # ✅ 혼잡도 업데이트
+                    # 혼잡도 업데이트
                     if (first_timestamp is not None and 
                         last_timestamp is not None and
                         isinstance(first_timestamp, (int, float)) and
                         isinstance(last_timestamp, (int, float)) and
-                        (int(last_timestamp) - int(first_timestamp)) > 0):  # ← 양수만!
+                        (int(last_timestamp) - int(first_timestamp)) > 0):  # 
                         try:
                             update_congestion_for_range(cursor, int(first_timestamp), int(last_timestamp))
                             logger.info("혼잡도 업데이트 완료")
@@ -650,24 +479,26 @@ async def update(data: UpdateData):
                     logger.error(f"FINISHED 처리 중 오류: {str(e)}", exc_info=True)
                     
             
-            # ===== 6단계: DB 커밋 ===== ✅ 모든 경우에 실행!
+            # ===== 6단계: DB 커밋 ===== 
             try:
                 conn.commit()
-                logger.info("✅ DB 커밋 완료")
+                logger.info("DB 커밋 완료")
             except Exception as e:
                 logger.error(f"DB 커밋 실패: {str(e)}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"DB 커밋 실패: {str(e)}")
             
             # ===== 7단계: WebSocket 브로드캐스트 =====
             try:
-                if data.status in ("WASHING", "SPINNING", "FINISHED"):
-                    await broadcast_room_status(data.machine_id, data.status)
-                    await broadcast_notify(data.machine_id, data.status)
-                    logger.info("WebSocket 브로드캐스트 완료")
+                if actual_status in ("WASHING", "SPINNING", "DRYING"):
+                    await broadcast_room_status(data.machine_id, actual_status)
+                    await broadcast_notify(data.machine_id, actual_status)
+                    logger.info(f"WebSocket 브로드캐스트 완료: {actual_status}")
+                elif actual_status == "FINISHED":
+                    logger.info("FINISHED 상태: 이미 3-2단계에서 알림 발송됨 (중복 방지)")
             except Exception as e:
                 logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}", exc_info=True)
             
-            logger.info(f"✅ UPDATE 요청 완료: machine_id={data.machine_id}")
+            logger.info(f"UPDATE 요청 완료: machine_id={data.machine_id}")
             return {"message": "received"}
     
     except HTTPException:
@@ -676,8 +507,7 @@ async def update(data: UpdateData):
         logger.error(f"예기치 않은 오류 발생: {str(e)}", exc_info=True)
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
-    
-    
+
 
 @router.post("/device_update", response_model=DeviceUpdateResponse)
 async def device_update(request: DeviceUpdateRequest):
@@ -721,7 +551,7 @@ async def device_update(request: DeviceUpdateRequest):
                     detail="Thresholds not calculated yet. Please complete at least one wash cycle."
                 )
             
-            logger.info(f"✅ 기준점 조회 완료: machine_id={request.machine_id}")
+            logger.info(f"기준점 조회 완료: machine_id={request.machine_id}")
             
             return DeviceUpdateResponse(
                 message="received",
@@ -734,4 +564,50 @@ async def device_update(request: DeviceUpdateRequest):
     except Exception as e:
         logger.error(f"기준점 조회 실패: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Device update failed: {str(e)}")
+
+
+@router.post("/raw_data", response_model=RawDataResponse)
+async def receive_raw_data(request: RawDataRequest):
+    """
+    아두이노에서 전송하는 원시 센서 데이터(magnitude 기반) 수신 및 DB 저장
+    """
+    logger.info(f"Raw data received: machine_id={request.machine_id}, magnitude={request.magnitude}, timestamp={request.timestamp}")
     
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            
+            # 1. machine_id 검증
+            cursor.execute(
+                "SELECT machine_id FROM machine_table WHERE machine_id = %s",
+                (request.machine_id,)
+            )
+            machine = cursor.fetchone()
+            
+            if not machine:
+                logger.warning(f"Unknown machine_id: {request.machine_id}")
+                raise HTTPException(status_code=404, detail="Machine not found")
+            
+            # 2. 센서 데이터를 개별 컬럼에 저장
+            insert_query = """
+                INSERT INTO raw_sensor_data 
+                    (machine_id, timestamp, magnitude, deltaX, deltaY, deltaZ, created_at)
+                VALUES 
+                    (%s, %s, %s, %s, %s, %s, NOW())
+            """
+            cursor.execute(
+                insert_query,
+                (request.machine_id, request.timestamp, request.magnitude, 
+                 request.deltaX, request.deltaY, request.deltaZ)
+            )
+            conn.commit()
+            
+            logger.info(f"Raw data saved: machine_id={request.machine_id}, row_id={cursor.lastrowid}")
+            
+            return RawDataResponse(message="receive ok")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Raw data save failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Raw data save failed: {str(e)}")
