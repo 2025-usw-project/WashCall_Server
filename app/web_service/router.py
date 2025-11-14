@@ -14,8 +14,8 @@ from app.auth.security import (
     hash_password, verify_password, issue_jwt, get_current_user, decode_jwt, is_admin
 )
 from app.database import get_db_connection
-from app.services.ai_summary import generate_summary
-from app.services.kma_weather import fetch_kma_weather
+from app.services.ai_summary import generate_summary, get_tip_from_cache_no_ttl
+from app.services.kma_weather import get_kma_weather_from_cache_only
 from app.utils.timer import compute_remaining_minutes
 from app.web_service.schemas import (
     RegisterRequest, RegisterResponse,
