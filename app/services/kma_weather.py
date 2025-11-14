@@ -420,3 +420,19 @@ def fetch_kma_weather(now: Optional[datetime] = None) -> Optional[dict[str, Opti
         "reh": _safe_int(categories.get("REH")),
         "wav": _safe_float(categories.get("WAV")),
     })
+
+
+async def refresh_weather_if_needed() -> None:
+    """Background task to refresh KMA weather cache when TTL has expired.
+
+    This function is intended to be triggered from /update. It runs
+    fetch_kma_weather in a worker thread so that external HTTP calls do
+    not block the event loop. TTL enforcement is handled inside
+    fetch_kma_weather via CACHE_DURATION_SECONDS.
+    """
+    async with WEATHER_REFRESH_LOCK:
+        now = datetime.now(tz=KST)
+        try:
+            await asyncio.to_thread(fetch_kma_weather, now)
+        except Exception as exc:
+            logger.warning(f"Weather background refresh failed: {exc}")
