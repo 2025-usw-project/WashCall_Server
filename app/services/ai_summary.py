@@ -344,6 +344,31 @@ def _fetch_cached_tip() -> Optional[str]:
         return None
 
 
+def get_tip_from_cache_no_ttl() -> Optional[str]:
+    """Fetch a random cached tip from DB without TTL filtering.
+
+    Used by the /tip endpoint so that user requests never trigger new AI calls
+    as long as there is at least one cached tip available.
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT tip_message FROM ai_tip_cache")
+            rows = cursor.fetchall() or []
+
+            if not rows:
+                return None
+
+            selected = random.choice(rows)
+            tip = selected.get("tip_message")
+            if tip:
+                logger.debug(f"[Cache] Returning cached tip (no TTL): {tip}")
+            return tip
+    except Exception as exc:
+        logger.warning(f"Cache (no TTL) fetch failed: {exc}")
+        return None
+
+
 def _store_tips_to_cache(tips: list[str]) -> None:
     """Store multiple tips to cache, clearing old ones."""
     try:
