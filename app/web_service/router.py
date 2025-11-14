@@ -668,12 +668,18 @@ async def get_tip(authorization: str | None = Header(None)):
     now_dt = datetime.now(tz=pytz.timezone("Asia/Seoul"))
     kr_holidays = holidays.country_holidays("KR")
 
+    # 1단계: TTL 없이 캐시된 TIP이 있으면 바로 반환 (AI 호출/추가 DB 조회 없음)
+    cached_tip = await run_in_threadpool(get_tip_from_cache_no_ttl)
+    if cached_tip:
+        return TipResponse(tip_message=cached_tip)
+
     # 순차 데이터 조회 (DB 연결 풀 고갈 방지)
     machines_data = await _fetch_machines_data(user_id)
     reservations = await _fetch_reservations()
     notify_counts = await _fetch_notify_counts()
     recent_finished = await _fetch_recent_finished(now_ts)
-    weather_raw = await run_in_threadpool(fetch_kma_weather, now_dt)
+    # 날씨는 DB 캐시에서만 읽고, 외부 KMA API는 /update 배경 작업에서만 호출
+    weather_raw = await run_in_threadpool(get_kma_weather_from_cache_only, now_dt)
     congestion_stats = await _fetch_congestion_stats()
     
     machines, course_avg_map = machines_data
