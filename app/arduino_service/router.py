@@ -615,30 +615,6 @@ async def receive_raw_data(request: RawDataRequest):
             conn.commit()
             
             logger.info(f"Raw data saved: machine_id={request.machine_id}, row_id={cursor.lastrowid}")
-
-            # 추가 진단: 실제로 같은 DB/스키마에 쓰였는지 확인
-            try:
-                cursor.execute("SELECT DATABASE() AS db, @@hostname AS host, @@port AS port, CONNECTION_ID() AS cid")
-                meta = cursor.fetchone() or {}
-                logger.info(
-                    f"DB meta: db={meta.get('db')}, host={meta.get('host')}, port={meta.get('port')}, cid={meta.get('cid')}"
-                )
-
-                cursor.execute("SELECT COUNT(*) AS cnt, MAX(id) AS max_id FROM raw_sensor_data")
-                agg = cursor.fetchone() or {}
-                logger.info(
-                    f"raw_sensor_data agg: count={agg.get('cnt')}, max_id={agg.get('max_id')}"
-                )
-
-                if cursor.lastrowid:
-                    cursor.execute(
-                        "SELECT machine_id, timestamp, magnitude, deltaX, deltaY, deltaZ, created_at FROM raw_sensor_data WHERE id = %s",
-                        (cursor.lastrowid,)
-                    )
-                    last_row = cursor.fetchone()
-                    logger.info(f"raw_sensor_data last_row_by_id: {last_row}")
-            except Exception as dbg_exc:
-                logger.warning(f"Post-insert debug query failed: {dbg_exc}")
             
             return RawDataResponse(message="receive ok")
     
