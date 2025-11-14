@@ -14,13 +14,29 @@ from app.notifications.fcm import send_to_tokens
 class ConnectionManager:
     def __init__(self):
         self.active: Dict[int, List[WebSocket]] = {}
+        self.user_locks: Dict[int, asyncio.Lock] = {}
+
+    def _lock_for(self, user_id: int) -> asyncio.Lock:
+        lock = self.user_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.user_locks[user_id] = lock
+        return lock
 
     async def connect(self, user_id: int, websocket: WebSocket):
         await websocket.accept()
-        self.active.setdefault(user_id, [])
-        if websocket not in self.active[user_id]:
-            self.active[user_id].append(websocket)
-        logger.info("WS connected user_id={} active_conns={}", user_id, len(self.active[user_id]))
+        to_close: List[WebSocket] = []
+        lock = self._lock_for(user_id)
+        async with lock:
+            prev = self.active.get(user_id, [])
+            to_close = [ws for ws in prev if ws is not websocket]
+            self.active[user_id] = [websocket]
+        closed = 0
+        for ws in to_close:
+            with suppress(Exception):
+                await ws.close()
+                closed += 1
+        logger.info("WS connected user_id={} active_conns={} (replaced_old={})", user_id, len(self.active[user_id]), closed)
 
     def disconnect(self, user_id: int, websocket: WebSocket):
     
