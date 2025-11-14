@@ -16,8 +16,11 @@ from loguru import logger
 from openai import OpenAI
 
 from app.database import get_db_connection
+from app.services.kma_weather import get_kma_weather_from_cache_only
 
 CACHE_DURATION_SECONDS = 60  # 1분
+KST = pytz.timezone("Asia/Seoul")
+AI_REFRESH_LOCK = asyncio.Lock()
 
 
 def _build_prompt(status_context: dict) -> str:
