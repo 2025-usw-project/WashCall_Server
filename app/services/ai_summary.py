@@ -392,6 +392,203 @@ def _store_tips_to_cache(tips: list[str]) -> None:
         logger.error(f"Cache store failed: {exc}")
 
 
+def _build_status_context_for_room1() -> dict:
+    """Build minimal status_context dict for room_id=1 using DB + cached weather.
+
+    This is used for background AI tip refresh so that heavy AI calls depend
+    only on /update and not on user-facing endpoints like /tip.
+    """
+    now_dt = datetime.now(tz=KST)
+    now_ts = int(time.time())
+
+    # Time context
+    weekday_labels = ["월", "화", "수", "목", "금", "토", "일"]
+    weekday_label = weekday_labels[now_dt.weekday()]
+    try:
+        kr_holidays = holidays.country_holidays("KR")
+        is_holiday = now_dt.date() in kr_holidays
+    except Exception:
+        is_holiday = False
+    is_weekend = now_dt.weekday() >= 5
+
+    time_context = {
+        "iso_timestamp": now_dt.isoformat(),
+        "weekday": weekday_label,
+        "hour": now_dt.hour,
+        "is_holiday": is_holiday,
+        "is_weekend": is_weekend,
+    }
+
+    # Weather from DB cache only
+    weather_context = get_kma_weather_from_cache_only(now_dt)
+
+    room_summary = {
+        "room_id": 1,
+        "room_name": "",
+        "machines_total": 0,
+        "machines_busy": 0,
+        "machines_idle": 0,
+        "avg_remaining_minutes": None,
+        "max_remaining_minutes": None,
+        "reservation_count": 0,
+        "notify_count": 0,
+        "estimated_wait_minutes": None,
+    }
+
+    recent_finished_count = 0
+    active_notify_subscriptions = 0
+
+    # 기본 혼잡도 통계 (모두 0)
+    days = ["월", "화", "수", "목", "금", "토", "일"]
+    congestion_stats = {d: [0] * 24 for d in days}
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+
+            # Machines in room 1
+            cursor.execute(
+                """
+                SELECT m.status,
+                       COALESCE(rt.room_name, m.room_name) AS room_name
+                FROM machine_table m
+                LEFT JOIN room_table rt ON m.room_id = rt.room_id
+                WHERE m.room_id = %s
+                """,
+                (1,),
+            )
+            machines = cursor.fetchall() or []
+
+            total = len(machines)
+            busy_statuses = {"WASHING", "SPINNING", "DRYING"}
+            busy = 0
+            room_name = ""
+
+            for m in machines:
+                status = (m.get("status") or "").upper()
+                if not room_name:
+                    room_name = m.get("room_name") or ""
+                if status in busy_statuses:
+                    busy += 1
+
+            idle = max(total - busy, 0)
+
+            room_summary["room_name"] = room_name
+            room_summary["machines_total"] = total
+            room_summary["machines_busy"] = busy
+            room_summary["machines_idle"] = idle
+
+            # Reservation count for room 1
+            cursor.execute(
+                "SELECT COUNT(*) AS cnt FROM reservation_table WHERE room_id = %s AND isreserved = 1",
+                (1,),
+            )
+            row = cursor.fetchone()
+            reservation_count = int(row.get("cnt") or 0) if row else 0
+            room_summary["reservation_count"] = reservation_count
+
+            # Notify subscription count for room 1
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM notify_subscriptions ns
+                JOIN machine_table m ON ns.machine_uuid = m.machine_uuid
+                WHERE m.room_id = %s
+                """,
+                (1,),
+            )
+            row = cursor.fetchone()
+            notify_count = int(row.get("cnt") or 0) if row else 0
+            room_summary["notify_count"] = notify_count
+            active_notify_subscriptions = notify_count
+
+            # Recent finished count in last 30 minutes
+            lookback_ts = now_ts - 1800
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM machine_table
+                WHERE room_id = %s AND status = %s AND timestamp >= %s
+                """,
+                (1, "FINISHED", lookback_ts),
+            )
+            row = cursor.fetchone()
+            recent_finished_count = int(row.get("cnt") or 0) if row else 0
+
+            # Congestion stats from busy_table
+            try:
+                cursor.execute("SELECT busy_day, busy_time, busy_count FROM busy_table")
+                rows = cursor.fetchall() or []
+
+                congestion_stats = {d: [0] * 24 for d in days}
+                for r in rows:
+                    day = str(r.get("busy_day") or "")
+                    hour = r.get("busy_time")
+                    count = r.get("busy_count")
+                    try:
+                        hour_int = int(hour)
+                    except Exception:
+                        continue
+                    if day in congestion_stats and 0 <= hour_int <= 23:
+                        congestion_stats[day][hour_int] = int(count or 0)
+            except Exception as exc:
+                logger.warning(f"Congestion stats fetch failed (AI): {exc}")
+    except Exception as exc:
+        logger.warning(f"Status context fetch failed for room 1: {exc}")
+
+    totals = {
+        "machines_total": room_summary["machines_total"],
+        "machines_busy": room_summary["machines_busy"],
+        "machines_idle": room_summary["machines_idle"],
+        "reservations_total": room_summary["reservation_count"],
+        "notify_total": room_summary["notify_count"],
+    }
+
+    alerts = {
+        "recent_finished_count": recent_finished_count,
+        "active_notify_subscriptions": active_notify_subscriptions,
+    }
+
+    status_context = {
+        "time": time_context,
+        "weather": weather_context,
+        "totals": totals,
+        "rooms": [room_summary],
+        "alerts": alerts,
+        "congestion_stats": congestion_stats,
+    }
+
+    return status_context
+
+
+async def refresh_ai_tip_if_needed() -> None:
+    """Background task to refresh AI tip cache when expired.
+
+    - Checks TTL using the same logic as _fetch_cached_tip (CACHE_DURATION_SECONDS).
+    - If expired, builds status_context for room 1 and calls generate_summary
+      in a worker thread so that heavy OpenRouter/Gemini calls do not block
+      the event loop.
+    - DB access remains synchronous inside the worker thread.
+    """
+    async with AI_REFRESH_LOCK:
+        try:
+            cached = _fetch_cached_tip()
+            if cached:
+                logger.debug("[AI Refresh] Cache still fresh, skipping refresh")
+                return
+        except Exception as exc:
+            logger.warning(f"[AI Refresh] Cache check failed: {exc}")
+            return
+
+        status_context = _build_status_context_for_room1()
+
+        try:
+            await asyncio.to_thread(generate_summary, status_context)
+            logger.info("[AI Refresh] generate_summary completed")
+        except Exception as exc:
+            logger.warning(f"[AI Refresh] Background generate_summary failed: {exc}")
+
+
 def generate_summary(status_context: dict) -> Optional[str]:
     """Generate one-line summary of laundry room status using configured AI provider.
     
