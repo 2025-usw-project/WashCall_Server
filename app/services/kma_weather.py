@@ -135,6 +135,58 @@ def _fetch_from_cache(base_date: str, base_time: str, nx: int, ny: int, now_ts: 
         return None
 
 
+def get_kma_weather_from_cache_only(now: Optional[datetime] = None) -> Optional[dict[str, Optional[float | str]]]:
+    """Return latest cached weather from DB without calling external KMA API.
+
+    Used by /load and /tip so that user-driven requests never hit the KMA API
+    directly. This function does NOT enforce any TTL; it simply returns the
+    closest future (or current) forecast from the existing cache.
+    """
+    if now is None:
+        now = datetime.now(tz=KST)
+
+    nx_str = os.getenv("KMA_NX")
+    ny_str = os.getenv("KMA_NY")
+
+    if not nx_str or not ny_str:
+        logger.debug("KMA weather cache-only read skipped: missing grid coordinates")
+        return None
+
+    nx = int(nx_str)
+    ny = int(ny_str)
+    base_date, base_time = _get_base_time(now)
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+
+            current_date = now.strftime("%Y%m%d")
+            current_time = now.strftime("%H%M")
+
+            cursor.execute(
+                """
+                SELECT * FROM weather_cache
+                WHERE base_date = %s AND base_time = %s AND nx = %s AND ny = %s
+                  AND (fcst_date > %s OR (fcst_date = %s AND fcst_time >= %s))
+                ORDER BY fcst_date, fcst_time
+                LIMIT 1
+                """,
+                (base_date, base_time, nx, ny, current_date, current_date, current_time),
+            )
+
+            row = cursor.fetchone()
+            if row:
+                logger.info(
+                    f"Weather cache-only hit: {base_date} {base_time}, fcst: {row.get('fcst_date')} {row.get('fcst_time')}"
+                )
+                return _format_weather_context(row)
+
+            return None
+    except Exception as exc:
+        logger.warning(f"Weather cache-only read failed: {exc}")
+        return None
+
+
 def _parse_xml_forecast(xml_text: str) -> Optional[list[dict]]:
     """Parse KMA XML response and group by forecast date+time.
     
