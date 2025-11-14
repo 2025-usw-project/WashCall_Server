@@ -465,7 +465,7 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
         is_weekend=is_weekend,
     )
 
-    weather_raw = await run_in_threadpool(fetch_kma_weather, now_dt)
+    weather_raw = await run_in_threadpool(get_kma_weather_from_cache_only, now_dt)
     weather_context = WeatherContext(**weather_raw) if weather_raw else None
 
     room_summaries: list[RoomSummary] = []
