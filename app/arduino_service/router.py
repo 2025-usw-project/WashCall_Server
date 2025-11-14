@@ -501,7 +501,15 @@ async def update(data: UpdateData):
                     logger.info("FINISHED 상태: 이미 3-2단계에서 알림 발송됨 (중복 방지)")
             except Exception as e:
                 logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}", exc_info=True)
-            
+
+            # ===== 8단계: AI TIP / 날씨 캐시 비동기 갱신 트리거 =====
+            try:
+                asyncio.create_task(refresh_ai_tip_if_needed())
+                asyncio.create_task(refresh_weather_if_needed())
+                logger.debug("Background AI tip/weather refresh tasks scheduled")
+            except Exception as e:
+                logger.warning(f"Background refresh scheduling failed: {str(e)}", exc_info=True)
+
             logger.info(f"UPDATE 요청 완료: machine_id={data.machine_id}")
             return {"message": "received"}
     
