@@ -6,6 +6,10 @@ from datetime import datetime, timedelta
 import traceback
 import pytz
 import logging
+import asyncio
+
+from app.services.ai_summary import refresh_ai_tip_if_needed
+from app.services.kma_weather import refresh_weather_if_needed
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
