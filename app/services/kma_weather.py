@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import xml.etree.ElementTree as ET
@@ -26,6 +27,7 @@ SKY_MAP = {
     4: "흐림",
 }
 CACHE_DURATION_SECONDS = 3600  # 1시간
+WEATHER_REFRESH_LOCK = asyncio.Lock()
 
 
 def _safe_int(value: Optional[str]) -> Optional[int]:
