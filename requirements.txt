@@ -27,3 +27,4 @@ uvicorn
 watchfiles
 websockets
 win32_setctime
+openai

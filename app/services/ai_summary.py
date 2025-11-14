@@ -9,10 +9,11 @@ import requests
 from google import genai
 from google.genai import types
 from loguru import logger
+from openai import OpenAI
 
 from app.database import get_db_connection
 
-CACHE_DURATION_SECONDS = 600  # 10분
+CACHE_DURATION_SECONDS = 60  # 1분
 
 
 def _build_prompt(status_context: dict) -> str:
@@ -141,7 +142,7 @@ def _build_prompt(status_context: dict) -> str:
     prompt_parts.append(
         "위 정보를 바탕으로 **언제 세탁하면 좋을지** 한 줄로 추천해주세요. "
         "혼잡도 통계를 분석하여 가장 한산한 시간대(요일과 시간)를 찾고, "
-        "'현재는 X대 사용중이지만, 내일 Y요일 Z시가 가장 한산할 것 같아요!' 또는 "
+        "'Y요일 Z시가 가장 한산할 것 같아요!' 또는 "
         "'지금보다 오늘 저녁 8시가 더 쾌적할 것 같아요!' 같은 식으로 **미래 시간대를 추천**해주세요. "
         "친근한 말투와 이모지를 적절히 사용하면 좋습니다."
     )
@@ -215,6 +216,69 @@ def _call_google_gemini(prompt: str, model: str, api_key: str, count: int = 5) -
         return results
     except Exception as exc:
         logger.error(f"Google Gemini API call failed: {exc}")
+        return []
+
+
+def _call_openrouter_chat(
+    prompt: str,
+    model: str,
+    api_key: str,
+    base_url: str,
+    count: int = 5,
+) -> list[str]:
+    """Call OpenRouter (OpenAI-compatible) chat completion API for multiple tips.
+
+    Args:
+        prompt: Input prompt string (already contains detailed context).
+        model: OpenRouter model name (e.g. "openai/gpt-oss-120b").
+        api_key: OpenRouter API key.
+        base_url: OpenRouter base URL (default: https://openrouter.ai/api/v1).
+        count: Number of candidate responses to request.
+
+    Returns:
+        List of generated one-line tips.
+    """
+    try:
+        client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+        )
+
+        system_instruction = (
+            "당신은 대학 기숙사 세탁실 이용 시간을 추천하는 AI입니다. "
+            "반드시 한 줄로만 추천하며, 자연스럽고 친근한 말투를 사용합니다. "
+            "혼잡도 통계를 분석하여 가장 한산한 미래 시간대(요일+시간)를 추천하세요. "
+            "'내일 금요일 저녁 8시가 한산할 것 같아요!' 또는 '오늘 밤 10시 이후가 쾌적할 거예요!' 같은 식으로 "
+            "미래 예측 형태로 추천해주세요. 이모지를 적절히 활용하세요."
+        )
+
+        logger.debug(f"[OpenRouter] Sending prompt to {model} (requesting {count} responses)")
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": prompt},
+            ],
+            n=count,
+            # Enable reasoning if the model supports it (OpenRouter extension)
+            extra_body={"reasoning": {"enabled": True}},
+        )
+
+        results: list[str] = []
+        if hasattr(response, "choices") and response.choices:
+            for idx, choice in enumerate(response.choices, start=1):
+                # In openai>=1.x chat.completions, message.content is usually a string
+                text = (getattr(choice, "message", None).content or "") if getattr(choice, "message", None) else ""
+                text = text.strip()
+                if text:
+                    results.append(text)
+                    logger.debug(f"[OpenRouter] Response {idx}: {text}")
+
+        logger.debug(f"[OpenRouter] Total responses received: {len(results)}")
+        return results
+    except Exception as exc:
+        logger.error(f"OpenRouter API call failed: {exc}")
         return []
 
 
@@ -314,10 +378,12 @@ def generate_summary(status_context: dict) -> Optional[str]:
     
     logger.info("[Cache] Cache expired or empty, generating new tips")
     
-    provider = os.getenv("AI_PROVIDER", "google").lower()
+    provider = os.getenv("AI_PROVIDER", "openrouter").lower()
     
-    if provider not in {"google", "ollama"}:
-        logger.warning(f"Invalid AI_PROVIDER: {provider}. Must be 'google' or 'ollama'.")
+    if provider not in {"google", "ollama", "openrouter"}:
+        logger.warning(
+            f"Invalid AI_PROVIDER: {provider}. Must be 'google', 'ollama', or 'openrouter'."
+        )
         return None
     
     prompt = _build_prompt(status_context)
@@ -334,7 +400,7 @@ def generate_summary(status_context: dict) -> Optional[str]:
             return None
         
         tips = _call_google_gemini(prompt, model, api_key, count=5)
-    
+
     elif provider == "ollama":
         base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
         model = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
@@ -344,6 +410,17 @@ def generate_summary(status_context: dict) -> Optional[str]:
             result = _call_ollama(prompt, model, base_url)
             if result:
                 tips.append(result)
+    
+    elif provider == "openrouter":
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        model = os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b")
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+        if not api_key:
+            logger.warning("OPENROUTER_API_KEY not configured")
+            return None
+
+        tips = _call_openrouter_chat(prompt, model, api_key, base_url, count=5)
     
     if tips:
         _store_tips_to_cache(tips)
