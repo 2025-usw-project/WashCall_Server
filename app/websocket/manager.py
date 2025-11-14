@@ -184,23 +184,51 @@ async def broadcast_room_status(machine_id: int, status: str):
     if not uids:
         logger.info(f"FCM 스킵 (room): machine_id={machine_id}, 구독자 없음")
         return
-    
-    # 3. FCM 토큰 조회
+
+    # 3. 개별 알림 구독자와 중복되는 방 구독자는 FCM 대상에서 제외
     with get_db_connection() as conn:
         cur = conn.cursor()
-        placeholders = ",".join(["%s"] * len(uids))
+        try:
+            cur.execute(
+                """
+                SELECT DISTINCT ns.user_id
+                FROM notify_subscriptions ns
+                JOIN machine_table m2 ON ns.machine_uuid = m2.machine_uuid
+                WHERE m2.machine_id = %s
+                """,
+                (machine_id,),
+            )
+            device_rows = cur.fetchall() or []
+            device_uids = {int(row[0]) for row in device_rows if row and row[0] is not None}
+        except Exception as e:
+            logger.warning(
+                "broadcast_room_status: device subscriber fetch failed for machine_id=%s error=%s",
+                machine_id,
+                str(e),
+            )
+            device_uids = set()
+
+        room_only_uids = [uid for uid in uids if uid not in device_uids]
+        if not room_only_uids:
+            logger.info(
+                f"FCM 스킵 (room): machine_id={machine_id}, room-only 구독자 없음 (개별 알림과 중복)"
+            )
+            return
+
+        # 4. FCM 토큰 조회 (room-only 구독자 대상)
+        placeholders = ",".join(["%s"] * len(room_only_uids))
         cur.execute(
             f"SELECT fcm_token FROM user_table WHERE user_id IN ({placeholders}) AND fcm_token IS NOT NULL",
-            tuple(uids)
+            tuple(room_only_uids),
         )
         rows = cur.fetchall() or []
-    
+
     tokens = [r[0] for r in rows if r and r[0]]
     if not tokens:
         logger.info(f"FCM 스킵 (room): machine_id={machine_id}, 유효한 토큰 없음")
         return
-    
-    # 4. FCM 전송 (FINISHED 상태만)
+
+    # 5. FCM 전송 (FINISHED 상태만)
     try:
         title = f"🎉 {room_name} 세탁 완료!"
         body = f"{machine_name}의 세탁이 완료되었습니다."

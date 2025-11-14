@@ -836,6 +836,20 @@ async def reserve(body: ReserveRequest, authorization: str | None = Header(None)
                 "INSERT INTO room_subscriptions (user_id, room_id) VALUES (%s, %s)",
                 (user_id, body.room_id)
             )
+        if body.isreserved == 1:
+            cursor.execute(
+                "SELECT machine_uuid FROM machine_table WHERE room_id = %s AND machine_uuid IS NOT NULL",
+                (body.room_id,)
+            )
+            mu_rows = cursor.fetchall() or []
+            machine_uuids = [row.get("machine_uuid") for row in mu_rows if row.get("machine_uuid")]
+            if machine_uuids:
+                placeholders = ",".join(["%s"] * len(machine_uuids))
+                params = [user_id] + machine_uuids
+                cursor.execute(
+                    f"DELETE FROM notify_subscriptions WHERE user_id = %s AND machine_uuid IN ({placeholders})",
+                    tuple(params),
+                )
         conn.commit()
     return {"message": "reserve ok"}
 
@@ -853,13 +867,14 @@ async def notify_me(body: NotifyMeRequest, authorization: str | None = Header(No
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         # Resolve machine_uuid by machine_id
-        cursor.execute("SELECT machine_uuid FROM machine_table WHERE machine_id = %s", (body.machine_id,))
+        cursor.execute("SELECT machine_uuid, room_id FROM machine_table WHERE machine_id = %s", (body.machine_id,))
         m = cursor.fetchone()
         if not m:
             raise HTTPException(status_code=404, detail="machine not found")
         machine_uuid = m.get("machine_uuid") or (m["machine_uuid"] if "machine_uuid" in m else None)
         if not machine_uuid:
             raise HTTPException(status_code=404, detail="machine not found")
+        room_id = m.get("room_id")
 
         if body.isusing == 1:
             cursor.execute(
@@ -871,6 +886,11 @@ async def notify_me(body: NotifyMeRequest, authorization: str | None = Header(No
                 cursor.execute(
                     "INSERT INTO notify_subscriptions (user_id, machine_uuid) VALUES (%s, %s)",
                     (user_id, machine_uuid)
+                )
+            if room_id is not None:
+                cursor.execute(
+                    "UPDATE reservation_table SET isreserved = 0 WHERE user_id = %s AND room_id = %s AND isreserved = 1",
+                    (user_id, room_id),
                 )
         else:
             cursor.execute(
