@@ -163,6 +163,15 @@ async def broadcast_room_status(machine_id: int, status: str):
                             timer_minutes = max(0, avg_minutes - elapsed_minutes)
                 except Exception as e:
                     logger.warning("broadcast_room_status: time calculation failed course=%s error=%s", course_name, str(e))
+
+        if machine_status == "WASHING" and avg_minutes is None and elapsed_minutes is None and timer_minutes is None:
+            avg_minutes = 36
+            elapsed_minutes = 0
+            timer_minutes = 36
+        if machine_status == "SPINNING" and avg_minutes is None and elapsed_minutes is None and timer_minutes is None:
+            avg_minutes = 10
+            elapsed_minutes = 0
+            timer_minutes = 10
         
         cursor.execute(
             "SELECT DISTINCT user_id FROM room_subscriptions WHERE room_id = %s",
@@ -323,6 +332,15 @@ async def broadcast_notify(machine_id: int, status: str):
                             timer_minutes = max(0, avg_minutes - elapsed_minutes)
                 except Exception as e:
                     logger.warning("broadcast_notify: time calculation failed course=%s error=%s", course_name, str(e))
+
+        if machine_status == "WASHING" and avg_minutes is None and elapsed_minutes is None and timer_minutes is None:
+            avg_minutes = 36
+            elapsed_minutes = 0
+            timer_minutes = 36
+        if machine_status == "SPINNING" and avg_minutes is None and elapsed_minutes is None and timer_minutes is None:
+            avg_minutes = 10
+            elapsed_minutes = 0
+            timer_minutes = 10
         
         cursor.execute(
             "SELECT user_id FROM notify_subscriptions WHERE machine_uuid = %s",

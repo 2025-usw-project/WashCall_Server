@@ -30,7 +30,6 @@ from app.web_service.schemas import (
     StatusContext, TimeContext, WeatherContext, TotalsContext, RoomSummary, AlertContext,
     TipResponse,
 )
-from app.websocket.manager import broadcast_machine_status
 from app.websocket.manager import manager
 
 router = APIRouter()
@@ -1052,13 +1051,6 @@ async def start_course(body: StartCourseRequest, authorization: str | None = Hea
         cursor.execute(update_sql, tuple(params))
 
         conn.commit()
-
-        # ✅ 4. WebSocket 브로드캐스트 (현재 상태로)
-        current_status = machine.get("status", "IDLE")
-        try:
-            await broadcast_machine_status(body.machine_id, current_status)
-        except Exception as e:
-            logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}")
 
         logger.info(
             "✅ %s 세탁 시작: %s (avg=%s분, timer=%s분)",
