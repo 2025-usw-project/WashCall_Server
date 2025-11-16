@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from .schemas import UpdateData, DeviceUpdateRequest, DeviceUpdateResponse, RawDataRequest, RawDataResponse
 from app.database import get_db_connection
-from app.websocket.manager import broadcast_room_status, broadcast_notify
+from app.websocket.manager import broadcast_machine_status
 from datetime import datetime, timedelta
 import traceback
 import pytz
@@ -283,19 +283,12 @@ async def update(data: UpdateData):
                 except Exception as e:
                     logger.error(f"세탁 시간 계산 실패: {str(e)}", exc_info=True)
                     
-                # ===== 3-2단계: SPINNING → FINISHED 전환 감지 + 알림 발송 ===== ⭐ 수정!
+                # ===== 3-2단계: SPINNING → FINISHED 전환 감지 + 알림 발송 ===== 
             if current_status == "SPINNING" and data.status == "FINISHED":
-                logger.info("✅ 상태 전환 감지: SPINNING → FINISHED")
-                logger.info(f"📍 DB 확인: machine_id {data.machine_id}가 SPINNING에서 FINISHED로 변경")
-                logger.info(f"⏳ 탈수 완료 감지! 알림 발송 중...")
-                
-                # ⭐ 여기서 알림 발송!
-                try:
-                    await broadcast_room_status(data.machine_id, "FINISHED")
-                    await broadcast_notify(data.machine_id, "FINISHED")
-                    logger.info("🔔 탈수 완료 알림 발송 완료")
-                except Exception as e:
-                    logger.error(f"탈수 완료 알림 발송 실패: {str(e)}", exc_info=True)
+                logger.info(" 상태 전환 감지: SPINNING → FINISHED")
+                logger.info(f" DB 확인: machine_id {data.machine_id}가 SPINNING에서 FINISHED로 변경")
+                logger.info(" 탈수 완료 감지! (브로드캐스트는 상태 업데이트/커밋 후 공통 처리)")
+
                         
             # ===== 4단계: machine_table 상태 업데이트 =====
             try:
@@ -493,12 +486,9 @@ async def update(data: UpdateData):
             
             # ===== 7단계: WebSocket 브로드캐스트 =====
             try:
-                if actual_status in ("WASHING", "SPINNING", "DRYING"):
-                    await broadcast_room_status(data.machine_id, actual_status)
-                    await broadcast_notify(data.machine_id, actual_status)
+                if actual_status in ("WASHING", "SPINNING", "DRYING", "FINISHED"):
+                    await broadcast_machine_status(data.machine_id, actual_status)
                     logger.info(f"WebSocket 브로드캐스트 완료: {actual_status}")
-                elif actual_status == "FINISHED":
-                    logger.info("FINISHED 상태: 이미 3-2단계에서 알림 발송됨 (중복 방지)")
             except Exception as e:
                 logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}", exc_info=True)
 

@@ -30,7 +30,7 @@ from app.web_service.schemas import (
     StatusContext, TimeContext, WeatherContext, TotalsContext, RoomSummary, AlertContext,
     TipResponse,
 )
-from app.websocket.manager import broadcast_room_status, broadcast_notify
+from app.websocket.manager import broadcast_machine_status
 from app.websocket.manager import manager
 
 router = APIRouter()
@@ -1056,8 +1056,7 @@ async def start_course(body: StartCourseRequest, authorization: str | None = Hea
         # ✅ 4. WebSocket 브로드캐스트 (현재 상태로)
         current_status = machine.get("status", "IDLE")
         try:
-            await broadcast_room_status(body.machine_id, current_status)
-            await broadcast_notify(body.machine_id, current_status)
+            await broadcast_machine_status(body.machine_id, current_status)
         except Exception as e:
             logger.error(f"WebSocket 브로드캐스트 실패: {str(e)}")
 

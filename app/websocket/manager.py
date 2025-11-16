@@ -88,6 +88,16 @@ TIMER_SYNC_INTERVAL_SECONDS = 60
 _timer_sync_task: asyncio.Task | None = None
 
 
+async def broadcast_machine_status(machine_id: int, status: str):
+    """Convenience helper: broadcast both room_status and notify for a machine.
+
+    - room_status: 방 구독자 UI 업데이트 및 FINISHED 시 방 단위 FCM
+    - notify: 개별 구독자 알림 및 FINISHED 시 개별 FCM + 자동 구독 해제
+    """
+    await broadcast_room_status(machine_id, status)
+    await broadcast_notify(machine_id, status)
+
+
 async def broadcast_room_status(machine_id: int, status: str):
     """
     방 구독자에게 WebSocket + FCM 알림 전송
