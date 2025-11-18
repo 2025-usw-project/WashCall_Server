@@ -425,6 +425,15 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
                 else:
                     logger.warning(f"[TIMER DEBUG] DRYING 계산 실패: first_ts_int={first_ts_int}, avg_minutes_val={avg_minutes_val}")
 
+        if status == "WASHING" and timer_val is None and avg_minutes_val is None and elapsed_minutes_val is None:
+            avg_minutes_val = 36
+            elapsed_minutes_val = 0
+            timer_val = 36
+        if status == "SPINNING" and timer_val is None and avg_minutes_val is None and elapsed_minutes_val is None:
+            avg_minutes_val = 10
+            elapsed_minutes_val = 0
+            timer_val = 10
+
         machines.append(
             MachineItem(
                 machine_id=int(r["machine_id"]),
