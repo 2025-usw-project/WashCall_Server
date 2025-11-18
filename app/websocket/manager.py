@@ -84,7 +84,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-TIMER_SYNC_INTERVAL_SECONDS = 60
+TIMER_SYNC_INTERVAL_SECONDS = 0
 _timer_sync_task: asyncio.Task | None = None
 
 
