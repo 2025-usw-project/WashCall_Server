@@ -108,7 +108,7 @@ async def broadcast_room_status(machine_id: int, status: str):
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT room_id, room_name, machine_name, machine_type, course_name, status, UNIX_TIMESTAMP(first_update) AS first_ts, spinning_update FROM machine_table WHERE machine_id = %s",
+            "SELECT room_id, room_name, machine_name, machine_type, course_name, status, UNIX_TIMESTAMP(first_update) AS first_ts, UNIX_TIMESTAMP(updated_at) AS updated_ts FROM machine_table WHERE machine_id = %s",
             (machine_id,)
         )
         m = cursor.fetchone()
@@ -122,56 +122,50 @@ async def broadcast_room_status(machine_id: int, status: str):
         machine_type = m.get("machine_type", "washer")
         course_name = m.get("course_name")
         first_ts = m.get("first_ts")
-        spinning_update = m.get("spinning_update")
+        updated_ts = m.get("updated_ts")
         machine_status = m.get("status", "").upper()
         
         avg_minutes = None
         elapsed_minutes = None
         timer_minutes = None
 
-        if course_name:
+        if machine_status == "WASHING":
+            # WASHING: 고정값 avg_minutes=36, elapsed는 updated_at 기준
+            avg_minutes = 36
+            if updated_ts:
+                elapsed_seconds = now_ts - int(updated_ts)
+                elapsed_minutes = elapsed_seconds // 60
+                timer_minutes = max(0, avg_minutes - elapsed_minutes)
+            else:
+                elapsed_minutes = 0
+                timer_minutes = 36
+        elif machine_status == "SPINNING":
+            # SPINNING: 고정값 avg_minutes=10, elapsed는 updated_at 기준
+            avg_minutes = 10
+            if updated_ts:
+                elapsed_seconds = now_ts - int(updated_ts)
+                elapsed_minutes = elapsed_seconds // 60
+                timer_minutes = max(0, avg_minutes - elapsed_minutes)
+            else:
+                elapsed_minutes = 0
+                timer_minutes = 10
+        elif machine_status == "DRYING" and course_name:
+            # DRYING: 기존 로직 유지 (avg_time 사용)
             cursor.execute(
-                "SELECT avg_time, avg_washing_time, avg_spinning_time FROM time_table WHERE course_name = %s",
+                "SELECT avg_time FROM time_table WHERE course_name = %s",
                 (course_name,)
             )
             row_avg = cursor.fetchone()
             if row_avg:
                 try:
-                    if machine_status == "SPINNING":
-                        # 탈수 중: avg_spinning_time 사용, spinning_update부터 경과 시간
-                        avg_spinning = row_avg.get("avg_spinning_time")
-                        if avg_spinning and spinning_update:
-                            avg_minutes = int(avg_spinning)
-                            elapsed_seconds = now_ts - int(spinning_update)
-                            elapsed_minutes = elapsed_seconds // 60
-                            timer_minutes = max(0, avg_minutes - elapsed_minutes)
-                    elif machine_status == "WASHING":
-                        # 세탁 중: avg_time 사용 (전체 코스 시간), first_update부터 경과 시간
-                        avg_time = row_avg.get("avg_time")
-                        if avg_time and first_ts:
-                            avg_minutes = int(avg_time)
-                            elapsed_seconds = now_ts - int(first_ts)
-                            elapsed_minutes = elapsed_seconds // 60
-                            timer_minutes = max(0, avg_minutes - elapsed_minutes)
-                    elif machine_status == "DRYING":
-                        # 건조 중: avg_time 사용, first_update부터 경과 시간
-                        avg_time = row_avg.get("avg_time")
-                        if avg_time and first_ts:
-                            avg_minutes = int(avg_time)
-                            elapsed_seconds = now_ts - int(first_ts)
-                            elapsed_minutes = elapsed_seconds // 60
-                            timer_minutes = max(0, avg_minutes - elapsed_minutes)
+                    avg_time = row_avg.get("avg_time")
+                    if avg_time and first_ts:
+                        avg_minutes = int(avg_time)
+                        elapsed_seconds = now_ts - int(first_ts)
+                        elapsed_minutes = elapsed_seconds // 60
+                        timer_minutes = max(0, avg_minutes - elapsed_minutes)
                 except Exception as e:
                     logger.warning("broadcast_room_status: time calculation failed course=%s error=%s", course_name, str(e))
-
-        if machine_status == "WASHING" and avg_minutes is None and elapsed_minutes is None and timer_minutes is None:
-            avg_minutes = 36
-            elapsed_minutes = 0
-            timer_minutes = 36
-        if machine_status == "SPINNING" and avg_minutes is None and elapsed_minutes is None and timer_minutes is None:
-            avg_minutes = 10
-            elapsed_minutes = 0
-            timer_minutes = 10
         
         cursor.execute(
             "SELECT DISTINCT user_id FROM room_subscriptions WHERE room_id = %s",
@@ -278,7 +272,7 @@ async def broadcast_notify(machine_id: int, status: str):
     with get_db_connection() as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            "SELECT machine_uuid, machine_name, machine_type, room_id, course_name, status, UNIX_TIMESTAMP(first_update) AS first_ts, spinning_update FROM machine_table WHERE machine_id = %s",
+            "SELECT machine_uuid, machine_name, machine_type, room_id, course_name, status, UNIX_TIMESTAMP(first_update) AS first_ts, UNIX_TIMESTAMP(updated_at) AS updated_ts FROM machine_table WHERE machine_id = %s",
             (machine_id,)
         )
         mu = cursor.fetchone()
@@ -291,56 +285,50 @@ async def broadcast_notify(machine_id: int, status: str):
         machine_type = mu.get("machine_type", "washer")
         course_name = mu.get("course_name")
         first_ts = mu.get("first_ts")
-        spinning_update = mu.get("spinning_update")
+        updated_ts = mu.get("updated_ts")
         machine_status = mu.get("status", "").upper()
         
         avg_minutes = None
         elapsed_minutes = None
         timer_minutes = None
 
-        if course_name:
+        if machine_status == "WASHING":
+            # WASHING: 고정값 avg_minutes=36, elapsed는 updated_at 기준
+            avg_minutes = 36
+            if updated_ts:
+                elapsed_seconds = now_ts - int(updated_ts)
+                elapsed_minutes = elapsed_seconds // 60
+                timer_minutes = max(0, avg_minutes - elapsed_minutes)
+            else:
+                elapsed_minutes = 0
+                timer_minutes = 36
+        elif machine_status == "SPINNING":
+            # SPINNING: 고정값 avg_minutes=10, elapsed는 updated_at 기준
+            avg_minutes = 10
+            if updated_ts:
+                elapsed_seconds = now_ts - int(updated_ts)
+                elapsed_minutes = elapsed_seconds // 60
+                timer_minutes = max(0, avg_minutes - elapsed_minutes)
+            else:
+                elapsed_minutes = 0
+                timer_minutes = 10
+        elif machine_status == "DRYING" and course_name:
+            # DRYING: 기존 로직 유지 (avg_time 사용)
             cursor.execute(
-                "SELECT avg_time, avg_washing_time, avg_spinning_time FROM time_table WHERE course_name = %s",
+                "SELECT avg_time FROM time_table WHERE course_name = %s",
                 (course_name,)
             )
             avg_row = cursor.fetchone()
             if avg_row:
                 try:
-                    if machine_status == "SPINNING":
-                        # 탈수 중: avg_spinning_time 사용
-                        avg_spinning = avg_row.get("avg_spinning_time")
-                        if avg_spinning and spinning_update:
-                            avg_minutes = int(avg_spinning)
-                            elapsed_seconds = now_ts - int(spinning_update)
-                            elapsed_minutes = elapsed_seconds // 60
-                            timer_minutes = max(0, avg_minutes - elapsed_minutes)
-                    elif machine_status == "WASHING":
-                        # 세탁 중: avg_time 사용 (전체 코스 시간)
-                        avg_time = avg_row.get("avg_time")
-                        if avg_time and first_ts:
-                            avg_minutes = int(avg_time)
-                            elapsed_seconds = now_ts - int(first_ts)
-                            elapsed_minutes = elapsed_seconds // 60
-                            timer_minutes = max(0, avg_minutes - elapsed_minutes)
-                    elif machine_status == "DRYING":
-                        # 건조 중: avg_time 사용
-                        avg_time = avg_row.get("avg_time")
-                        if avg_time and first_ts:
-                            avg_minutes = int(avg_time)
-                            elapsed_seconds = now_ts - int(first_ts)
-                            elapsed_minutes = elapsed_seconds // 60
-                            timer_minutes = max(0, avg_minutes - elapsed_minutes)
+                    avg_time = avg_row.get("avg_time")
+                    if avg_time and first_ts:
+                        avg_minutes = int(avg_time)
+                        elapsed_seconds = now_ts - int(first_ts)
+                        elapsed_minutes = elapsed_seconds // 60
+                        timer_minutes = max(0, avg_minutes - elapsed_minutes)
                 except Exception as e:
                     logger.warning("broadcast_notify: time calculation failed course=%s error=%s", course_name, str(e))
-
-        if machine_status == "WASHING" and avg_minutes is None and elapsed_minutes is None and timer_minutes is None:
-            avg_minutes = 36
-            elapsed_minutes = 0
-            timer_minutes = 36
-        if machine_status == "SPINNING" and avg_minutes is None and elapsed_minutes is None and timer_minutes is None:
-            avg_minutes = 10
-            elapsed_minutes = 0
-            timer_minutes = 10
         
         cursor.execute(
             "SELECT user_id FROM notify_subscriptions WHERE machine_uuid = %s",
@@ -437,7 +425,6 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
                    room_name,
                    course_name,
                    UNIX_TIMESTAMP(first_update) AS first_ts,
-                   spinning_update,
                    UNIX_TIMESTAMP(updated_at) AS updated_ts
             FROM machine_table
             """
@@ -488,7 +475,6 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
         machine_type = row.get("machine_type") or "washer"
         course_name = row.get("course_name")
         first_ts = row.get("first_ts")
-        spinning_update = row.get("spinning_update")
         updated_ts = row.get("updated_ts")
         
         timer_val: int | None = None
