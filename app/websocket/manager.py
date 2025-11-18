@@ -84,7 +84,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-TIMER_SYNC_INTERVAL_SECONDS = 0
+TIMER_SYNC_INTERVAL_SECONDS = 1
 _timer_sync_task: asyncio.Task | None = None
 
 
@@ -437,7 +437,8 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
                    room_name,
                    course_name,
                    UNIX_TIMESTAMP(first_update) AS first_ts,
-                   spinning_update
+                   spinning_update,
+                   UNIX_TIMESTAMP(updated_at) AS updated_ts
             FROM machine_table
             """
         )
@@ -488,33 +489,39 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
         course_name = row.get("course_name")
         first_ts = row.get("first_ts")
         spinning_update = row.get("spinning_update")
+        updated_ts = row.get("updated_ts")
         
         timer_val: int | None = None
         avg_minutes_val: int | None = None
         elapsed_minutes_val: int | None = None
         
-        if status in {"WASHING", "SPINNING", "DRYING"} and course_name:
-            if status == "SPINNING":
-                # 탈수 중: avg_spinning_time 사용
-                avg_minutes_val = course_spinning_map.get(course_name)
-                if avg_minutes_val and spinning_update:
-                    elapsed_seconds = now_ts - int(spinning_update)
-                    elapsed_minutes_val = elapsed_seconds // 60
-                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
-            elif status == "WASHING":
-                # 세탁 중: avg_time 사용 (전체 코스 시간)
-                avg_minutes_val = course_avg_map.get(course_name)
-                if avg_minutes_val and first_ts:
-                    elapsed_seconds = now_ts - int(first_ts)
-                    elapsed_minutes_val = elapsed_seconds // 60
-                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
-            elif status == "DRYING":
-                # 건조 중: avg_time 사용
-                avg_minutes_val = course_avg_map.get(course_name)
-                if avg_minutes_val and first_ts:
-                    elapsed_seconds = now_ts - int(first_ts)
-                    elapsed_minutes_val = elapsed_seconds // 60
-                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+        if status == "WASHING":
+            # WASHING: 고정값 avg_minutes=36, elapsed는 updated_at 기준
+            avg_minutes_val = 36
+            if updated_ts:
+                elapsed_seconds = now_ts - int(updated_ts)
+                elapsed_minutes_val = elapsed_seconds // 60
+                timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+            else:
+                elapsed_minutes_val = 0
+                timer_val = 36
+        elif status == "SPINNING":
+            # SPINNING: 고정값 avg_minutes=10, elapsed는 updated_at 기준
+            avg_minutes_val = 10
+            if updated_ts:
+                elapsed_seconds = now_ts - int(updated_ts)
+                elapsed_minutes_val = elapsed_seconds // 60
+                timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+            else:
+                elapsed_minutes_val = 0
+                timer_val = 10
+        elif status == "DRYING" and course_name:
+            # DRYING: 기존 로직 유지 (avg_time 사용)
+            avg_minutes_val = course_avg_map.get(course_name)
+            if avg_minutes_val and first_ts:
+                elapsed_seconds = now_ts - int(first_ts)
+                elapsed_minutes_val = elapsed_seconds // 60
+                timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
 
         payloads.append(
             {
