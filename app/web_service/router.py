@@ -602,12 +602,14 @@ async def _fetch_recent_finished(now_ts: int) -> int:
 
 
 async def _fetch_congestion_stats() -> dict:
-    """Fetch congestion statistics asynchronously."""
+    """Fetch congestion statistics asynchronously (9시~21시만)."""
     def _fetch():
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor(dictionary=True)
-                cursor.execute("SELECT busy_day, busy_time, busy_count FROM busy_table")
+                cursor.execute(
+                    "SELECT busy_day, busy_time, busy_count FROM busy_table WHERE busy_time BETWEEN 9 AND 21"
+                )
                 rows = cursor.fetchall() or []
                 
                 days = ["월", "화", "수", "목", "금", "토", "일"]
