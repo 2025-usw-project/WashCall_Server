@@ -777,6 +777,10 @@ async def get_tip(authorization: str | None = Header(None)):
     try:
         status_dict = status_context.model_dump()
         status_dict["congestion_stats"] = congestion_stats
+        status_dict["system_info"] = {
+            "operating_hours": "09:00-21:00",
+            "operating_hours_description": "세탁기 사용 가능 시간은 9시부터 21시까지입니다"
+        }
         tip_message = await run_in_threadpool(generate_summary, status_dict)
     except Exception as exc:
         logger.warning(f"AI tip generation failed: {exc}")
