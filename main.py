@@ -40,6 +40,7 @@ app.add_middleware(
     allow_origins=[
         "https://washcall.space",
         "https://www.washcall.space",
+        "https://test.washcall.space",
         "http://localhost:5500",  # Live Server
         "http://localhost:5501",  # Live Server
         "http://localhost:8080",  # 로컬 개발
