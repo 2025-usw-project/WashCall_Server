@@ -41,6 +41,7 @@ app.add_middleware(
         "https://washcall.space",
         "https://www.washcall.space",
         "https://test.washcall.space",
+        "https://washcall-test.2jang.dev",
         "http://localhost:5500",  # Live Server
         "http://localhost:5501",  # Live Server
         "http://localhost:8080",  # 로컬 개발
