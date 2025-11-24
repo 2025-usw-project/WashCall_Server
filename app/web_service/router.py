@@ -362,6 +362,7 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
 
     for r in rows:
         status = (r.get("status") or "").upper()
+        machine_type = r.get("machine_type") or "washer"
         course_name = r.get("course_name")
         first_ts_val = r.get("first_ts")
         updated_ts = r.get("updated_ts")
@@ -396,13 +397,24 @@ async def load(body: LoadRequest | None = None, authorization: str | None = Head
             else:
                 elapsed_minutes_val = 0
                 timer_val = 10
-        elif status == "DRYING" and course_name:
-            # DRYING: 기존 로직 유지 (avg_time 사용)
-            avg_minutes_val = course_avg_map.get(course_name)
-            if avg_minutes_val and first_ts_int:
-                elapsed_seconds = now_ts - first_ts_int
-                elapsed_minutes_val = elapsed_seconds // 60
-                timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+        elif status == "DRYING":
+            if machine_type == "dryer":
+                # DRYING (건조기): 고정값 avg_minutes=45, elapsed는 updated_at 기준
+                avg_minutes_val = 45
+                if updated_ts:
+                    elapsed_seconds = now_ts - int(updated_ts)
+                    elapsed_minutes_val = elapsed_seconds // 60
+                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+                else:
+                    elapsed_minutes_val = 0
+                    timer_val = 45
+            elif course_name:
+                # DRYING (세탁기): 기존 로직 유지 (avg_time 사용)
+                avg_minutes_val = course_avg_map.get(course_name)
+                if avg_minutes_val and first_ts_int:
+                    elapsed_seconds = now_ts - first_ts_int
+                    elapsed_minutes_val = elapsed_seconds // 60
+                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
 
         machines.append(
             MachineItem(
