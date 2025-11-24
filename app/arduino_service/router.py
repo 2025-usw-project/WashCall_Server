@@ -289,6 +289,44 @@ async def update(data: UpdateData):
                 logger.info(f" DB 확인: machine_id {data.machine_id}가 SPINNING에서 FINISHED로 변경")
                 logger.info(" 탈수 완료 감지! (브로드캐스트는 상태 업데이트/커밋 후 공통 처리)")
 
+            # ===== 3-3단계: DRYING → FINISHED 전환 감지 (건조기) ===== 
+            if current_status == "DRYING" and data.status == "FINISHED":
+                logger.info(" 상태 전환 감지: DRYING → FINISHED (건조기)")
+                logger.info(f" DB 확인: machine_id {data.machine_id}가 DRYING에서 FINISHED로 변경")
+                logger.info(" 건조 완료 감지! (브로드캐스트는 상태 업데이트/커밋 후 공통 처리)")
+                
+                # 건조 시간 계산 및 기록 (dryer의 경우)
+                try:
+                    cursor.execute(
+                        """
+                        SELECT 
+                            UNIX_TIMESTAMP(first_update) as first_timestamp,
+                            course_name,
+                            machine_type
+                        FROM machine_table
+                        WHERE machine_id=%s
+                        """,
+                        (data.machine_id,)
+                    )
+                    
+                    result = cursor.fetchone()
+                    if result and result.get("first_timestamp") and result.get("machine_type") == "dryer":
+                        first_timestamp = result.get("first_timestamp")
+                        course_name = result.get("course_name")
+                        
+                        # 건조 시간 = 현재 timestamp - first_update
+                        drying_time_seconds = int(data.timestamp) - int(first_timestamp)
+                        
+                        if drying_time_seconds > 0 and course_name:
+                            drying_time_minutes = drying_time_seconds // 60
+                            logger.info(f"건조 시간 계산: {data.timestamp} - {first_timestamp} = {drying_time_seconds}초 = {drying_time_minutes}분")
+                            logger.info("건조 시간 계산 완료")
+                        else:
+                            logger.warning(f"건조 시간 계산 실패: drying_time={drying_time_seconds}초, course_name={course_name}")
+                
+                except Exception as e:
+                    logger.error(f"건조 시간 계산 실패: {str(e)}", exc_info=True)
+
                         
             # ===== 4단계: machine_table 상태 업데이트 =====
             try:
