@@ -149,23 +149,34 @@ async def broadcast_room_status(machine_id: int, status: str):
             else:
                 elapsed_minutes = 0
                 timer_minutes = 10
-        elif machine_status == "DRYING" and course_name:
-            # DRYING: 기존 로직 유지 (avg_time 사용)
-            cursor.execute(
-                "SELECT avg_time FROM time_table WHERE course_name = %s",
-                (course_name,)
-            )
-            row_avg = cursor.fetchone()
-            if row_avg:
-                try:
-                    avg_time = row_avg.get("avg_time")
-                    if avg_time and first_ts:
-                        avg_minutes = int(avg_time)
-                        elapsed_seconds = now_ts - int(first_ts)
-                        elapsed_minutes = elapsed_seconds // 60
-                        timer_minutes = max(0, avg_minutes - elapsed_minutes)
-                except Exception as e:
-                    logger.warning("broadcast_room_status: time calculation failed course=%s error=%s", course_name, str(e))
+        elif machine_status == "DRYING":
+            if machine_type == "dryer":
+                # DRYING (건조기): 고정값 avg_minutes=45, elapsed는 updated_at 기준
+                avg_minutes = 45
+                if updated_ts:
+                    elapsed_seconds = now_ts - int(updated_ts)
+                    elapsed_minutes = elapsed_seconds // 60
+                    timer_minutes = max(0, avg_minutes - elapsed_minutes)
+                else:
+                    elapsed_minutes = 0
+                    timer_minutes = 45
+            elif course_name:
+                # DRYING (세탁기): 기존 로직 유지 (avg_time 사용)
+                cursor.execute(
+                    "SELECT avg_time FROM time_table WHERE course_name = %s",
+                    (course_name,)
+                )
+                row_avg = cursor.fetchone()
+                if row_avg:
+                    try:
+                        avg_time = row_avg.get("avg_time")
+                        if avg_time and first_ts:
+                            avg_minutes = int(avg_time)
+                            elapsed_seconds = now_ts - int(first_ts)
+                            elapsed_minutes = elapsed_seconds // 60
+                            timer_minutes = max(0, avg_minutes - elapsed_minutes)
+                    except Exception as e:
+                        logger.warning("broadcast_room_status: time calculation failed course=%s error=%s", course_name, str(e))
         
         cursor.execute(
             "SELECT DISTINCT user_id FROM room_subscriptions WHERE room_id = %s",
@@ -312,23 +323,34 @@ async def broadcast_notify(machine_id: int, status: str):
             else:
                 elapsed_minutes = 0
                 timer_minutes = 10
-        elif machine_status == "DRYING" and course_name:
-            # DRYING: 기존 로직 유지 (avg_time 사용)
-            cursor.execute(
-                "SELECT avg_time FROM time_table WHERE course_name = %s",
-                (course_name,)
-            )
-            avg_row = cursor.fetchone()
-            if avg_row:
-                try:
-                    avg_time = avg_row.get("avg_time")
-                    if avg_time and first_ts:
-                        avg_minutes = int(avg_time)
-                        elapsed_seconds = now_ts - int(first_ts)
-                        elapsed_minutes = elapsed_seconds // 60
-                        timer_minutes = max(0, avg_minutes - elapsed_minutes)
-                except Exception as e:
-                    logger.warning("broadcast_notify: time calculation failed course=%s error=%s", course_name, str(e))
+        elif machine_status == "DRYING":
+            if machine_type == "dryer":
+                # DRYING (건조기): 고정값 avg_minutes=45, elapsed는 updated_at 기준
+                avg_minutes = 45
+                if updated_ts:
+                    elapsed_seconds = now_ts - int(updated_ts)
+                    elapsed_minutes = elapsed_seconds // 60
+                    timer_minutes = max(0, avg_minutes - elapsed_minutes)
+                else:
+                    elapsed_minutes = 0
+                    timer_minutes = 45
+            elif course_name:
+                # DRYING (세탁기): 기존 로직 유지 (avg_time 사용)
+                cursor.execute(
+                    "SELECT avg_time FROM time_table WHERE course_name = %s",
+                    (course_name,)
+                )
+                avg_row = cursor.fetchone()
+                if avg_row:
+                    try:
+                        avg_time = avg_row.get("avg_time")
+                        if avg_time and first_ts:
+                            avg_minutes = int(avg_time)
+                            elapsed_seconds = now_ts - int(first_ts)
+                            elapsed_minutes = elapsed_seconds // 60
+                            timer_minutes = max(0, avg_minutes - elapsed_minutes)
+                    except Exception as e:
+                        logger.warning("broadcast_notify: time calculation failed course=%s error=%s", course_name, str(e))
         
         cursor.execute(
             "SELECT user_id FROM notify_subscriptions WHERE machine_uuid = %s",
@@ -501,13 +523,24 @@ async def _gather_machine_timers(now_ts: int) -> list[dict]:
             else:
                 elapsed_minutes_val = 0
                 timer_val = 10
-        elif status == "DRYING" and course_name:
-            # DRYING: 기존 로직 유지 (avg_time 사용)
-            avg_minutes_val = course_avg_map.get(course_name)
-            if avg_minutes_val and first_ts:
-                elapsed_seconds = now_ts - int(first_ts)
-                elapsed_minutes_val = elapsed_seconds // 60
-                timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+        elif status == "DRYING":
+            if machine_type == "dryer":
+                # DRYING (건조기): 고정값 avg_minutes=45, elapsed는 updated_at 기준
+                avg_minutes_val = 45
+                if updated_ts:
+                    elapsed_seconds = now_ts - int(updated_ts)
+                    elapsed_minutes_val = elapsed_seconds // 60
+                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
+                else:
+                    elapsed_minutes_val = 0
+                    timer_val = 45
+            elif course_name:
+                # DRYING (세탁기): 기존 로직 유지 (avg_time 사용)
+                avg_minutes_val = course_avg_map.get(course_name)
+                if avg_minutes_val and first_ts:
+                    elapsed_seconds = now_ts - int(first_ts)
+                    elapsed_minutes_val = elapsed_seconds // 60
+                    timer_val = max(0, avg_minutes_val - elapsed_minutes_val)
 
         payloads.append(
             {
