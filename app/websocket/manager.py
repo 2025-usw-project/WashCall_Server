@@ -254,8 +254,13 @@ async def broadcast_room_status(machine_id: int, status: str):
 
     # 5. FCM 전송 (FINISHED 상태만)
     try:
-        title = f"🎉 {room_name} 세탁 완료!"
-        body = f"{machine_name}의 세탁이 완료되었습니다."
+        if machine_type == "dryer":
+            title = f"🎉 {room_name} 건조 완료!"
+            body = f"{machine_name}의 건조가 완료되었습니다."
+        else:
+            title = f"🎉 {room_name} 세탁 완료!"
+            body = f"{machine_name}의 세탁이 완료되었습니다."
+        
         data = {
             "machine_id": str(machine_id),
             "room_id": str(room_id),
@@ -397,8 +402,13 @@ async def broadcast_notify(machine_id: int, status: str):
     
     # 4. FCM 전송 (백그라운드 알림)
     try:
-        title = "🎉 세탁 완료!"
-        body = f"{machine_name}의 세탁이 완료되었습니다. 빨래를 꺼내주세요!"
+        if machine_type == "dryer":
+            title = "🎉 건조 완료!"
+            body = f"{machine_name}의 건조가 완료되었습니다. 빨래를 꺼내주세요!"
+        else:
+            title = "🎉 세탁 완료!"
+            body = f"{machine_name}의 세탁이 완료되었습니다. 빨래를 꺼내주세요!"
+        
         data = {
             "machine_id": str(machine_id),
             "room_id": str(mu.get("room_id")),
