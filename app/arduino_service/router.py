@@ -638,7 +638,7 @@ async def receive_raw_data(request: RawDataRequest):
             cursor.execute(
                 insert_query,
                 (request.machine_id, request.timestamp, request.magnitude, 
-                 request.deltaX, request.deltaY, request.deltaZ)
+                request.deltaX, request.deltaY, request.deltaZ)
             )
             conn.commit()
             
